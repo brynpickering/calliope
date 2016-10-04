@@ -293,3 +293,17 @@ def piecewise(model):
         for x in m.x:
             for t in m.t:
                 setattr(m,"{}_{}_{}".format(y,x,t),set_piecewise_constraints(y, x, t, piece_dict))
+
+def secondary_carrier(model):
+    """
+    Temporary optional constraint to provide a secondary carrier for a given
+    technology. 
+    E.g. combined heat and power (CHP) consumes gas to produce heat and electricity.
+
+    Requires the technologies to be subscripted with their share of the energy (e.g.
+    chp_heat & chp_power).
+
+    Constraint simply forces "_heat" technology to operate at the same time as the "_power"
+    technology.
+    """
+
