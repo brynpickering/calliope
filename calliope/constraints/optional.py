@@ -151,3 +151,145 @@ def group_fraction(model):
     grp = m.demand_power_peak_group
     m.c_group_fraction_demand_power_peak = \
         po.Constraint(m.c, grp, rule=c_group_fraction_demand_power_peak_rule)
+
+def piecewise(model):
+    """
+    piecewise constraint creates 2-dimensional piecewise constraint to connect consumption and
+    production of conversion technologies
+
+    uses BuildPiecewiseND from
+    https://projects.coin-or.org/Pyomo/browser/pyomo.data/trunk/pyomo/data/pyomobook/scripts/advanced?rev=10872&order=name
+    
+    """
+    import numpy as np
+    m = model.m
+    # remove constraint referring to energy conversion
+    del(m.c_s_balance_conversion) 
+
+    # pieces are in yaml file 'piecewise' and loaded into config_model
+    piece_dict = model.config_model.pieces
+
+    def set_piecewise_constraints(y, x, t, piece_dict):
+        c_prod = model.get_option(y + '.carrier')
+        c_source = model.get_option(y + '.source_carrier')
+        num = 10 #number of pieces to split capacity variable
+        tri = generate_delaunay(piece_dict[y][c_source]['prod'], y, x=x, num=num)
+        def _get_con_vals(tri, piece_dict):
+            prod_array, cap_array = np.transpose(tri.points)
+            cap_array_T = np.reshape(cap_array,(num,len(piece_dict[y][c_source]['prod'])))
+            con_vals = []
+            for i in range(len(cap_array_T)):
+                con_vals.append(np.multiply(cap_array_T[i], piece_dict[y][c_source]['con']))
+            con_vals = [item for sublist in con_vals for item in sublist]
+            return con_vals
+
+        con_vals = _get_con_vals(tri, piece_dict)
+
+        return BuildPiecewiseND([m.es_prod[c_prod,y,x,t], m.e_cap[y,x]],
+         -1 * m.es_con[c_source,y,x,t],
+         tri,
+         con_vals)
+
+    def generate_delaunay(prod, y, x=None, num=10):
+        """
+        Generate a Delaunay triangulation of the 2-dimensional
+        bounded variable domain given the array of Pyomo
+        variables [x, y]. x = load rate piecewise, y = maximum capacity.
+        The number of grid points to generate for
+        each variable is set by the optional keyword argument
+        'num' (default=10).
+        Requires both numpy and scipy.spatial be available.
+        """
+        import scipy.spatial
+    
+        linegrids = []
+        e_cap = model.get_option(y + '.constraints.e_cap.max', x=x)
+        cap = np.linspace(0, e_cap, num)
+        
+        for c in cap:
+            for i in prod:
+                linegrids.append([c*i,c])
+        # generates a meshgrid and then flattens and transposes
+        # the meshgrid into an (npoints, D) shaped array of
+        # coordinates
+        points = np.vstack(linegrids)
+        return scipy.spatial.Delaunay(points)
+
+    def BuildPiecewiseND(xvars, zvar, tri, zvals):
+        """
+        Builds constraints defining a D-dimensional
+        piecewise representation of the given triangulation.
+        Args:
+            xvars: A (D, 1) array of Pyomo variable objects
+                   representing the inputs of the piecewise
+                   function.
+            zvar: A Pyomo variable object set equal to the
+                  output of the piecewise function.
+            tri: A triangulation over the discretized
+                 variable domain. Required attributes:
+               - points: An (npoints, D) shaped array listing the
+                         D-dimensional coordinates of the
+                         discretization points.
+               - simplices: An (nsimplices, D+1) shaped array of
+                            integers specifying the D+1 indices
+                            of the points vector that define
+                            each simplex of the triangulation.
+            zvals: An (npoints, 1) shaped array listing the
+                   value of the piecewise function at each of
+                   coordinates in the triangulation points
+                   array.
+        Returns:
+            A Pyomo Block object containing variables and
+            constraints that define the piecewise function.
+        """
+    
+        b = po.Block(concrete=True)
+        ndim = len(xvars)
+        nsimplices = len(tri.simplices)
+        npoints = len(tri.points)
+        pointsT = list(zip(*tri.points))
+    
+        # create index objects
+        b.dimensions =  po.RangeSet(0, ndim-1)
+        b.simplices = po.RangeSet(0, nsimplices-1)
+        b.vertices = po.RangeSet(0, npoints-1)
+    
+        # create variables
+        b.lmda = po.Var(b.vertices, within=po.NonNegativeReals)
+        b.y = po.Var(b.simplices, within=po.Binary)
+    
+        # create constraints
+        def input_c_rule(b, d):
+            pointsTd = pointsT[d]
+            return xvars[d] == sum(pointsTd[v]*b.lmda[v]
+                                   for v in b.vertices)
+        b.input_c = po.Constraint(b.dimensions, rule=input_c_rule)
+    
+        b.output_c = po.Constraint(expr=\
+            zvar == sum(zvals[v]*b.lmda[v] for v in b.vertices))
+    
+        b.convex_c = po.Constraint(expr=\
+            sum(b.lmda[v] for v in b.vertices) == 1)
+    
+        # generate a map from vertex index to simplex index,
+        # which avoids an n^2 lookup when generating the
+        # constraint
+        vertex_to_simplex = [[] for v in b.vertices]
+        for s, simplex in enumerate(tri.simplices):
+            for v in simplex:
+                vertex_to_simplex[v].append(s)
+        def vertex_regions_rule(b, v):
+            return b.lmda[v] <= \
+                sum(b.y[s] for s in vertex_to_simplex[v])
+        b.vertex_regions_c = \
+            po.Constraint(b.vertices, rule=vertex_regions_rule)
+    
+        b.single_region_c = po.Constraint(expr=\
+            sum(b.y[s] for s in b.simplices) == 1)
+    
+        return b
+    
+    for y in m.y_conv:
+        for x in m.x:
+            for t in m.t:
+                setattr(m,"{}_{}_{}".format(y,x,t),set_piecewise_constraints(y, x, t, piece_dict))
