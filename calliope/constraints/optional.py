@@ -306,4 +306,13 @@ def secondary_carrier(model):
     Constraint simply forces "_heat" technology to operate at the same time as the "_power"
     technology.
     """
+    m = model.m
+    def conversion_rule_2(m, y, x, t):
+        c_1 = model.get_option(y + '.carrier_2')
+        c_2 = model.get_option(y + '.source_carrier')
+        htp = model.get_option(y + 'constriants.htp')
+        return (m.es_prod[c_2, y, x, t]
+                == m.es_prod[c_1, y, x, t] * htp)
 
+    m.c_s_balance_conversion_2 = po.Constraint(m.y_conv, m.x, m.t,
+                                             rule=conversion_rule_2)
