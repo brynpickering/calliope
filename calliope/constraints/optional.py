@@ -310,7 +310,10 @@ def secondary_carrier(model):
     def conversion_rule_2(m, y, x, t):
         c_1 = model.get_option(y + '.carrier_2')
         c_2 = model.get_option(y + '.source_carrier')
-        htp = model.get_option(y + 'constriants.htp')
+        try:
+            htp = model.get_option(y + 'constriants.htp')
+        except:
+            htp = 1
         return (m.es_prod[c_2, y, x, t]
                 == m.es_prod[c_1, y, x, t] * htp)
 
