@@ -164,17 +164,23 @@ def piecewise(model):
     import numpy as np
     m = model.m
     # remove constraint referring to energy conversion
-    del(m.c_s_balance_conversion) 
+    del(m.c_s_balance_conversion)
+    if 'c_s_balance_conversion_source_2' in m:
+        del(m.c_s_balance_conversion_source_2)
 
     # pieces are in yaml file 'piecewise' and loaded into config_model
     piece_dict = model.config_model.pieces
 
-    def set_piecewise_constraints(y, x, t, piece_dict):
+    def set_piecewise_constraints(y, x, t, piece_dict,c=1):
         c_prod = model.get_option(y + '.carrier')
-        c_source = model.get_option(y + '.source_carrier')
+        if c == 1:
+            c_source = model.get_option(y + '.source_carrier')
+        else:
+            c_source = model.get_option(y + '.source_carrier_2')
         num = 10 #number of pieces to split capacity variable
         tri = generate_delaunay(piece_dict[y][c_source]['prod'], y, x=x, num=num)
-        def _get_con_vals(tri, piece_dict):
+
+        def _get_con_vals(tri, piece_dict, c_source):
             prod_array, cap_array = np.transpose(tri.points)
             cap_array_T = np.reshape(cap_array,(num,len(piece_dict[y][c_source]['prod'])))
             con_vals = []
@@ -183,13 +189,13 @@ def piecewise(model):
             con_vals = [item for sublist in con_vals for item in sublist]
             return con_vals
 
-        con_vals = _get_con_vals(tri, piece_dict)
+        con_vals = _get_con_vals(tri, piece_dict, c_source)
 
         return BuildPiecewiseND([m.es_prod[c_prod,y,x,t], m.e_cap[y,x]],
          -1 * m.es_con[c_source,y,x,t],
          tri,
          con_vals)
-
+            
     def generate_delaunay(prod, y, x=None, num=10):
         """
         Generate a Delaunay triangulation of the 2-dimensional
@@ -289,10 +295,41 @@ def piecewise(model):
     
         return b
     
+    def conversion_rule(m, y, x, t):
+                c_prod = model.get_option(y + '.carrier')
+                c_source = model.get_option(y + '.source_carrier')
+                e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+                return (m.es_prod[c_prod, y, x, t]
+                      == -1 * m.es_con[c_source, y, x, t] * e_eff)
+    def conversion_rule_2(m, y, x, t):
+                c_prod = model.get_option(y + '.carrier')
+                c_source = model.get_option(y + '.source_carrier_2')
+                e_eff = get_constraint_param(model, 'e_eff_2', y, x, t)
+                return (m.es_prod[c_prod, y, x, t]
+                      == -1 * m.es_con[c_source, y, x, t] * e_eff)
+
+    y_conv_non_piecewise = []
+    y_conv_non_piecewise_2 = []
     for y in m.y_conv:
-        for x in m.x:
-            for t in m.t:
-                setattr(m,"{}_{}_{}".format(y,x,t),set_piecewise_constraints(y, x, t, piece_dict))
+        if 'source_carrier' in model.get_option(y + '.piecewise'):
+            for x in m.x:
+                for t in m.t:
+                    setattr(m,"{}_{}_{}".format(y,x,t),set_piecewise_constraints(y, x, t, piece_dict))
+        else:
+            y_conv_non_piecewise.append(y)
+        if 'source_carrier_2' in model.get_option(y):
+            if 'source_carrier_2' in model.get_option(y + '.piecewise'):
+                for x in m.x:
+                    for t in m.t:
+                        setattr(m,"{}_{}_{}".format(y,x,t),set_piecewise_constraints(y, x, t, piece_dict,c=2))
+            else:
+                y_conv_non_piecewise_2.append(y)
+
+
+    m.c_s_balance_conversion = po.Constraint(po.Set(initialize=self._sets['y_conv_non_piecewise'], ordered=True), m.x, m.t,
+                                             rule=conversion_rule)
+    m.c_s_balance_conversion_source_2 = po.Constraint(po.Set(initialize=self._sets['y_conv_non_piecewise_2'], ordered=True), m.x, m.t,
+                                             rule=conversion_rule_2)
 
 def secondary_carrier(model):
     """
@@ -319,3 +356,30 @@ def secondary_carrier(model):
 
     m.c_s_balance_conversion_2 = po.Constraint(m.y_conv, m.x, m.t,
                                              rule=conversion_rule_2)
+
+def secondary_source_carrier(model):
+    """
+    Temporary optional constraint to provide a secondary source carrier for a given
+    technology. 
+    E.g. Boiler consumes gas and electricity to produce heat.
+    The electricity consumption is for pumps in this case.
+
+    Requires the technologies to be subscripted with their share of the energy (e.g.
+    chp_heat & chp_power).
+
+    Constraint simply forces "_heat" technology to operate at the same time as the "_power"
+    technology.
+    """
+    m = model.m
+    def conversion_rule(m, y, x, t):
+        c_prod = model.get_option(y + '.carrier')
+        c_source = model.get_option(y + '.source_carrier_2')
+        try:
+            e_eff = get_constraint_param(model, 'e_eff_2', y, x, t)
+        except:
+            e_eff = 1
+        return (m.es_prod[c_prod, y, x, t]
+                == -1 * m.es_con[c_source, y, x, t] * e_eff)
+
+    m.c_s_balance_conversion_source_2 = po.Constraint(m.y_conv, m.x, m.t,
+                                             rule=conversion_rule)
