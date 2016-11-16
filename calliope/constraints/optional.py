@@ -537,7 +537,7 @@ def fixed_cost(model):
     m.cost_con_fixed = po.Var(m.y, m.x, m.kc, within=po.NonNegativeReals)
 
     def purchased_rule(m, y, x): #Binary result of whether a tech has non-zero production at any point in time horizon
-        prod = sum(m.es_prod[c,y,x,t] for c in m.c for t in m.t)
+        prod = sum(m.es_prod[c,y,x,t] for c in m.c for t in m.t) - sum(m.es_con[c,y,x,t] for c in m.c for t in m.t)
         return (m.purchased[y,x] >= prod / 1e10)
 
     def c_cost_rule(m, y, x, k): #re-create this rule with cost_con_fixed
