@@ -258,7 +258,7 @@ def plot_transmission(solution, tech='hvac', carrier='power',
     G = nx.relabel_nodes(G, dict(list(zip(list(range(len(zones))), zones))))
 
     # Transmission
-    edge_transmission = {edge: int(round(df.at[edge[1], edge[0]] / 1e6))
+    edge_transmission = {edge: int(round(df.at[edge[1], edge[0]] )) #numbers are too small to divide by 1e6
                          for edge in G.edges()}
 
     # Utilization ratio
@@ -268,7 +268,7 @@ def plot_transmission(solution, tech='hvac', carrier='power',
 
     # Set edge labels
     if labels == 'utilization':
-        edge_labels = {k: '{:.2f}'.format(v) for k, v in edge_use.items()}
+        edge_labels = {k: '{:.3f}'.format(v) for k, v in edge_use.items()}
     elif labels == 'transmission':
         edge_labels = edge_transmission
 

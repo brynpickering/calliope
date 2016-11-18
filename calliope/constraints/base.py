@@ -11,6 +11,7 @@ Basic model constraints.
 
 import pyomo.core as po
 import numpy as np
+import time
 
 from .. import exceptions
 from .. import transmission
@@ -153,7 +154,9 @@ def node_energy_balance(model):
     m.s = po.Var(m.y_pc, m.x, m.t, within=po.NonNegativeReals)
     m.es_prod = po.Var(m.c, m.y, m.x, m.t, within=po.NonNegativeReals)
     m.es_con = po.Var(m.c, m.y, m.x, m.t, within=po.NegativeReals)
-
+    # used to be defined in node_constraints_build, moved to work with piecewise:
+    
+    m.e_cap = po.Var(m.y, m.x, within=po.NonNegativeReals)
     # Constraint rules
     def transmission_rule(m, y, x, t):
         y_remote, x_remote = transmission.get_remotes(y, x)
@@ -171,18 +174,33 @@ def node_energy_balance(model):
         c_prod = model.get_option(y + '.carrier')
         c_source = model.get_option(y + '.source_carrier')
         e_eff = get_constraint_param(model, 'e_eff', y, x, t)
-        return (m.es_prod[c_prod, y, x, t]
-                == -1 * m.es_con[c_source, y, x, t] * e_eff)
+        if 'piecewise.source_carrier' in model.get_option(y).as_dict_flat():
+                # in case source_carrier is a piecewise function
+                timestamp = int(time.mktime(t.timetuple()))
+                x_pieces = model.config_model.pieces[y][c_source].prod
+                z_pieces = model.config_model.pieces[y][c_source].con
+                p_z = -1 * m.es_con[c_source,y,x,t]
+                piecewise_constraints = set_piecewise_constraints(model,y,x,t,
+                    m.es_prod[c_prod,y,x,t],m.e_cap[y,x],p_z,
+                    x_pieces,z_pieces)
+                # create the Pyomo Block of variables and constraints
+                setattr(m,"pc_{}_{}_{}".format(y,x,timestamp), piecewise_constraints)
+                # skip creating c_es_prod_max for this technology
+                return po.Constraint.Skip
+        else:
+            return (m.es_prod[c_prod, y, x, t]
+            == -1 * m.es_con[c_source, y, x, t] * e_eff)
 
     def pc_rule(m, y, x, t):
         e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        c = model.get_option(y + '.carrier')
         # TODO once Pyomo supports it,
         # let this update conditionally on param update!
         if po.value(e_eff) == 0:
             e_prod = 0
         else:
-            e_prod = sum(m.es_prod[c, y, x, t] for c in m.c) / e_eff
-        e_con = sum(m.es_con[c, y, x, t] for c in m.c) * e_eff
+            e_prod = m.es_prod[c, y, x, t]/ e_eff
+        e_con = m.es_con[c, y, x, t] * e_eff
 
         # If this tech is in the set of techs allowing rb, include it
         if y in m.y_rb:
@@ -280,7 +298,7 @@ def node_constraints_build(model):
     # Variables
     m.s_cap = po.Var(m.y_pc, m.x, within=po.NonNegativeReals)
     m.r_cap = po.Var(m.y_def_r, m.x, within=po.NonNegativeReals)
-    m.e_cap = po.Var(m.y, m.x, within=po.NonNegativeReals)
+    # m.e_cap = po.Var(m.y, m.x, within=po.NonNegativeReals) # defined earlier to work with piecewise definition
     m.e_cap_net = po.Var(m.y, m.x, within=po.NonNegativeReals)
     m.rb_cap = po.Var(m.y_rb, m.x, within=po.NonNegativeReals)
 
@@ -392,6 +410,28 @@ def node_constraints_operational(model):
         if (e_prod is True and
                 c == model.get_option(y + '.carrier')):
             return m.es_prod[c, y, x, t] <= time_res.at[t] * m.e_cap[y, x]
+        elif (e_prod is True and
+                c == model.get_option(y + '.carrier_2')):
+            #case where a second carrier is defined, e.g. for a combined heat and power station
+            #would be better to have a set of techs with a secondary carrier at start
+            c_1 = model.get_option(y + '.carrier')
+            c_2 = c
+            htp = model.get_option(y + '.constraints.htp')
+            if 'piecewise.htp' in model.get_option(y).as_dict_flat():
+                # in case htp is a piecewise function
+                timestamp = int(time.mktime(t.timetuple()))
+                x_pieces = model.config_model.pieces[y].htp.c_1
+                z_pieces = model.config_model.pieces[y].htp.c_2
+                piecewise_constraints = set_piecewise_constraints(model,y,x,t,
+                    m.es_prod[c_1,y,x,t],m.e_cap[y,x],m.es_prod[c_2,y,x,t],
+                    x_pieces,z_pieces)
+                # create the Pyomo Block of variables and constraints
+                setattr(m,"pc_{}_{}_{}_htp".format(y,x,timestamp), piecewise_constraints)
+                # skip creating c_es_prod_max for this technology
+                return po.Constraint.Skip
+            else:
+                return (m.es_prod[c_2, y, x, t]
+                == m.es_prod[c_1, y, x, t] * htp)
         else:
             return m.es_prod[c, y, x, t] == 0
 
@@ -547,6 +587,7 @@ def node_costs(model):
     # Variables
     m.cost = po.Var(m.y, m.x, m.kc, within=po.NonNegativeReals)
     m.cost_con = po.Var(m.y, m.x, m.kc, within=po.NonNegativeReals)
+    m.cost_con_fixed = po.Var(m.y, m.x, m.kc, within=po.NonNegativeReals)
     m.cost_op_fixed = po.Var(m.y, m.x, m.kc, within=po.NonNegativeReals)
     m.cost_op_variable = po.Var(m.y, m.x, m.kc, within=po.NonNegativeReals)
     m.cost_op_var = po.Var(m.y, m.x, m.t, m.kc, within=po.NonNegativeReals)
@@ -555,6 +596,7 @@ def node_costs(model):
     m.revenue_var = po.Var(m.y, m.x, m.t, m.kr, within=po.NonNegativeReals)
     m.revenue_fixed = po.Var(m.y, m.x, m.kr, within=po.NonNegativeReals)
     m.revenue = po.Var(m.y, m.x, m.kr, within=po.NonNegativeReals)
+    m.purchased = po.Var(m.y, m.x, within=po.Binary)
 
     # Constraint rules
     def c_cost_rule(m, y, x, k):
@@ -562,7 +604,7 @@ def node_costs(model):
             m.cost[y, x, k] ==
             m.cost_con[y, x, k] +
             m.cost_op_fixed[y, x, k] +
-            m.cost_op_variable[y, x, k]
+            m.cost_op_variable[y, x, k]            
         )
 
     def c_cost_con_rule(m, y, x, k):
@@ -595,8 +637,20 @@ def node_costs(model):
             m.cost_con[y, x, k] == _depreciation_rate(y, k) *
             (sum(time_res * weights) / 8760) *
             (cost_s_cap + cost_r_cap + cost_r_area + cost_rb_cap +
-             cost_e_cap * m.e_cap[y, x])
+             cost_e_cap * m.e_cap[y, x] + m.cost_con_fixed[y, x, k])
         )
+    
+    def purchased_rule(m, y, x): #Binary result of whether a tech has non-zero production at any point in time horizon
+        prod = sum(m.es_prod[c,y,x,t] for c in m.c for t in m.t) - sum(m.es_con[c,y,x,t] for c in m.c for t in m.t)
+        return (m.purchased[y,x] >= prod / 1e10)
+
+    def cost_con_fixed_rule(m, y, x, k): # Cost incurred as fixed value irrespective of technology size
+        cap_fixed = _cost('cap_fixed', y, k, x)
+        if y in m.y_trans:
+            # Divided by 2 for transmission techs because construction costs
+            # are counted at both ends
+            cap_fixed = cap_fixed/2 
+        return (m.cost_con_fixed[y,x,k] == m.purchased[y,x] * cap_fixed)
 
     def c_cost_op_fixed_rule(m, y, x, k):
         if y in m.y:
@@ -693,6 +747,7 @@ def node_costs(model):
     # Constraints
     m.c_cost = po.Constraint(m.y, m.x, m.kc, rule=c_cost_rule)
     m.c_cost_con = po.Constraint(m.y, m.x, m.kc, rule=c_cost_con_rule)
+    m.c_cost_con_fixed = po.Constraint(m.y, m.x, m.kc, rule=cost_con_fixed_rule)
     m.c_cost_op_fixed = po.Constraint(m.y, m.x, m.kc, rule=c_cost_op_fixed_rule)
     m.c_cost_op_variable = po.Constraint(m.y, m.x, m.kc, rule=c_cost_op_variable_rule)
     m.c_cost_op_var = po.Constraint(m.y, m.x, m.t, m.kc, rule=c_cost_op_var_rule)
@@ -701,7 +756,8 @@ def node_costs(model):
     m.c_revenue_var = po.Constraint(m.y, m.x, m.t, m.kr, rule=c_revenue_var_rule)
     m.c_revenue_fixed = po.Constraint(m.y, m.x, m.kr, rule=c_revenue_fixed_rule)
     m.c_revenue = po.Constraint(m.y, m.x, m.kr, rule=c_revenue_rule)
-
+    m.c_purchased = po.Constraint(m.y, m.x, rule=purchased_rule)
+    
 
 def model_constraints(model):
     m = model.m
@@ -748,3 +804,157 @@ def model_constraints(model):
     # Constraints
     m.c_system_balance = po.Constraint(m.c, m.x, m.t,
                                        rule=c_system_balance_rule)
+
+def set_piecewise_constraints(model,y, x, t, p_x, p_y, p_z, x_pieces, z_pieces, num=2):
+    """
+    Generate a Pyomo block containing required variables and constraints for 
+    2D piecewise function.
+
+    Args:
+        y: tech
+        x: location
+        t: timestep
+        p_x: Pyomo variable as input to piecewise function, pieces taken from piece_dict
+            Tested only with es_prod normalised against e_cap
+        p_y:  Pyomo variable as input to piecewise function, pieces created in this function
+            Only works with e_cap, which is cut into 5 pieces (can change number of pieces in `generate delaunay`)
+        p_z: Pyomo variable to take value of output, pieces taken from piece_dict
+            Tested only with es_con & es_prod where a secondary carrier is defined by a heat to power ratio
+        x_pieces: list of values describing curve p_x follows, found at e.g. model.config_model.pieces.y.power.prod
+            Normalised w.r.t. y-axis 
+        z_pieces: list of values describing curve p_z follows
+            Normalised w.r.t. y-axis 
+        num: number of pieces to create a Delaunay triangulation from p_y maximum and minimum values
+    
+    Based on:
+    https://projects.coin-or.org/Pyomo/browser/pyomo.data/trunk/pyomo/data/pyomobook/scripts/advanced?rev=10872&order=name
+    """
+    def generate_delaunay(x_pieces, y, num, x=None):
+        """
+        Generate a Delaunay triangulation of the 2-dimensional
+        bounded variable domain given the array of Pyomo
+        variables [x, y]. 
+        **Currently only works with e_cap**
+        Args:
+            x_pieces: points of the piecewise curve associated with p_x, 
+                taken from piece_dict 
+            y: tech
+            x: location
+            num: The number of grid points to generate for each variable
+
+        Requires both numpy and scipy.spatial be available.
+        """
+        import scipy.spatial
+    
+        linegrids = []
+        e_cap = model.get_option(y + '.constraints.e_cap.max', x=x)
+        cap = np.linspace(0, e_cap, num)
+        if e_cap == 0:
+            return None
+        for c in cap:
+            for i in x_pieces:
+                linegrids.append([c*i,c])
+        # generates a meshgrid and then flattens and transposes
+        # the meshgrid into an (npoints, D) shaped array of
+        # coordinates
+        points = np.vstack(linegrids)
+        return scipy.spatial.Delaunay(points)
+        
+    def BuildPiecewiseND(xvars, zvar, tri, zvals):
+        """
+        Builds constraints defining a D-dimensional
+        piecewise representation of the given triangulation.
+        Args:
+            xvars: A (D, 1) array of Pyomo variable objects
+                   representing the inputs of the piecewise
+                   function.
+            zvar: A Pyomo variable object set equal to the
+                  output of the piecewise function.
+            tri: A triangulation over the discretized
+                 variable domain. Required attributes:
+               - points: An (npoints, D) shaped array listing the
+                         D-dimensional coordinates of the
+                         discretization points.
+               - simplices: An (nsimplices, D+1) shaped array of
+                            integers specifying the D+1 indices
+                            of the points vector that define
+                            each simplex of the triangulation.
+            zvals: An (npoints, 1) shaped array listing the
+                   value of the piecewise function at each of
+                   coordinates in the triangulation points
+                   array.
+        Returns:
+            A Pyomo Block object containing variables and
+            constraints that define the piecewise function.
+        """
+    
+        b = po.Block(concrete=True)
+        ndim = len(xvars)
+        nsimplices = len(tri.simplices)
+        npoints = len(tri.points)
+        pointsT = list(zip(*tri.points))
+    
+        # create index objects
+        b.dimensions =  po.RangeSet(0, ndim-1)
+        b.simplices = po.RangeSet(0, nsimplices-1)
+        b.vertices = po.RangeSet(0, npoints-1)
+    
+        # create variables
+        b.lmda = po.Var(b.vertices, within=po.NonNegativeReals)
+        b.y = po.Var(b.simplices, within=po.Binary)
+    
+        # create constraints
+        def input_c_rule(b, d):
+            pointsTd = pointsT[d]
+            return xvars[d] == sum(pointsTd[v]*b.lmda[v]
+                                   for v in b.vertices)
+        b.input_c = po.Constraint(b.dimensions, rule=input_c_rule)
+    
+        b.output_c = po.Constraint(expr=\
+            zvar == sum(zvals[v]*b.lmda[v] for v in b.vertices))
+    
+        b.convex_c = po.Constraint(expr=\
+            sum(b.lmda[v] for v in b.vertices) == 1)
+    
+        # generate a map from vertex index to simplex index,
+        # which avoids an n^2 lookup when generating the
+        # constraint
+        vertex_to_simplex = [[] for v in b.vertices]
+        for s, simplex in enumerate(tri.simplices):
+            for v in simplex:
+                vertex_to_simplex[v].append(s)
+        def vertex_regions_rule(b, v):
+            return b.lmda[v] <= \
+                sum(b.y[s] for s in vertex_to_simplex[v])
+        b.vertex_regions_c = \
+            po.Constraint(b.vertices, rule=vertex_regions_rule)
+    
+        b.single_region_c = po.Constraint(expr=\
+            sum(b.y[s] for s in b.simplices) == 1)
+    
+        return b
+    
+
+    def _get_z_vals(tri, x_pieces, z_pieces):
+        """
+        Creates a matrix of values defining what z would be at each [x,y] point
+        """
+        x_array, y_array = np.transpose(tri.points)
+        y_array_T = np.reshape(y_array,(num,len(x_pieces)))
+        z_vals = []
+        for i in range(len(y_array_T)):
+            # need to multiply the value given in piecewise dictionary by y axis (e_cap)
+            # as pieces in dictionary are normalised w.r.t. y axis
+            z_vals.append(np.multiply(y_array_T[i], z_pieces))
+        z_vals = [item for sublist in z_vals for item in sublist]
+
+        return z_vals
+    
+    tri = generate_delaunay(x_pieces, y, x=x, num=num)
+
+    if not tri: # case where e_cap.max = 0
+        return None
+    z_vals = _get_z_vals(tri, x_pieces, z_pieces)
+    return BuildPiecewiseND([p_x, p_y], p_z,
+     tri, z_vals)
+    
