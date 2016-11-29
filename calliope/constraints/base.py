@@ -796,8 +796,8 @@ def model_constraints(model):
                              for xs in family for y in m.y_p))
             if c == 'power':
                 return balance == 0
-            else:  # e.g. for heat
-                return balance >= 0
+            else:  # e.g. for heat, 5% additional allowed
+                return (0, balance,50)
         else:
             return po.Constraint.NoConstraint
 
