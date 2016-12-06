@@ -176,7 +176,7 @@ def node_energy_balance(model):
         e_eff = get_constraint_param(model, 'e_eff', y, x, t)
         if 'piecewise.source_carrier' in model.get_option(y).as_dict_flat():
                 # in case source_carrier is a piecewise function
-                timestamp = int(time.mktime(t.timetuple()))
+                timestamp = list(m.t).index(t) # find index of timestep, to create unique Pyomo Block
                 x_pieces = model.config_model.pieces[y][c_source].prod
                 z_pieces = model.config_model.pieces[y][c_source].con
                 p_z = -1 * m.es_con[c_source,y,x,t]
@@ -184,7 +184,7 @@ def node_energy_balance(model):
                     m.es_prod[c_prod,y,x,t],m.e_cap[y,x],p_z,
                     x_pieces,z_pieces)
                 # create the Pyomo Block of variables and constraints
-                setattr(m,"pc_{}_{}_{}".format(y,x,timestamp), piecewise_constraints)
+                setattr(m,"piecewise_{}_{}_{}".format(y,x,timestamp), piecewise_constraints)
                 # skip creating c_es_prod_max for this technology
                 return po.Constraint.Skip
         else:
@@ -419,7 +419,7 @@ def node_constraints_operational(model):
             htp = model.get_option(y + '.constraints.htp')
             if 'piecewise.htp' in model.get_option(y).as_dict_flat():
                 # in case htp is a piecewise function
-                timestamp = int(time.mktime(t.timetuple()))
+                timestamp = list(m.t).index(t) # find index of timestep, to create unique Pyomo Block
                 x_pieces = model.config_model.pieces[y].htp.c_1
                 z_pieces = model.config_model.pieces[y].htp.c_2
                 piecewise_constraints = set_piecewise_constraints(model,y,x,t,
