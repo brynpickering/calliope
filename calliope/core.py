@@ -176,9 +176,9 @@ class Model(BaseModel):
         self.initialize_sets()
 
         # Get time series data
-        time_series_constraint = []
+        time_series_constraint = ['r'] # 'r' has to be a timeseries constraint
         time_series_data = []
-        allowed_timeseries_constraints = ['r', 'r_eff', 'r_scale', 'rb_eff', 's_loss',
+        allowed_timeseries_constraints = ['r_eff', 'r_scale', 'rb_eff', 's_loss',
                                     'e_prod', 'e_con', 'c_eff', 'e_eff', 
                                     'e_cap_min_use', 'e_ramping'] #these can be numeric, avoiding true/false constraints
         allowed_timeseries_data = ['om_var', 'om_fuel',
@@ -187,6 +187,8 @@ class Model(BaseModel):
             if isinstance(v,str):
                 if v.startswith("file"): #find any refering to a file
                     params = k.split('.') #split the elements of the key to get constraint/cost type
+                    if params[-1] == 'r':
+                        return None
                     if params[-1] in allowed_timeseries_constraints: #look for e.g. e_eff
                         time_series_constraint.append(params[-1])
                     elif params[-1] in allowed_timeseries_data: #look for e.g. om_fuel
@@ -194,7 +196,7 @@ class Model(BaseModel):
                         if str(time_series_data).find(str([params[-3],params[-2],params[-1]])) == -1: 
                             time_series_data.append([params[-3],params[-2],params[-1]])
                     else:
-                        raise Exception("unable to handle loading data from file for '{}'".format(indiv_timeseries_param))
+                        raise Exception("unable to handle loading data from file for '{}'".format(params[-1]))
         #send list of parameters to config_model AttrDict
         self.config_model['timeseries_constraints'] = list(set(time_series_constraint))
         self.config_model['timeseries_data'] = time_series_data
