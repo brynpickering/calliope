@@ -581,6 +581,10 @@ def node_costs(model):
         return cost_getter(cost, y, k, x=x, costs_type='revenue')
 
     @utils.memoize
+    def _revenue(cost, y, k, x=None):
+        return cost_getter(cost, y, k, x=x, costs_type='revenue')
+
+    @utils.memoize
     def _cost_per_distance(cost, y, k, x):
         return cost_per_distance_getter(cost, y, k, x)
 
@@ -679,7 +683,7 @@ def node_costs(model):
             carrier = model.get_option(y + '.carrier')
             return (
                 m.cost_op_var[y, x, t, k] ==
-                get_cost_param(model,'om_var',k,y,x,t) *
+                get_cost_param(model,'om_var', k, y, x, t) *
                 weights.loc[t] *
                 m.es_prod[carrier, y, x, t]
             )
@@ -688,7 +692,7 @@ def node_costs(model):
 
     def c_cost_op_fuel_rule(m, y, x, t, k):
         r_eff = get_constraint_param(model, 'r_eff', y, x, t)
-        om_fuel = get_cost_param(model,'om_fuel',k,y,x,t)
+        om_fuel = get_cost_param(model,'om_fuel', k, y, x, t)
         if po.value(r_eff) > 0:
             # Dividing by r_eff here so we get the actual r used, not the rs
             # moved into storage...

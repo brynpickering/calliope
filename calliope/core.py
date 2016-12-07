@@ -175,31 +175,8 @@ class Model(BaseModel):
         self.initialize_parents()
         self.initialize_sets()
 
-        # Get time series data
-        time_series_constraint = ['r'] # 'r' has to be a timeseries constraint
-        time_series_data = []
-        allowed_timeseries_constraints = ['r_eff', 'r_scale', 'rb_eff', 's_loss',
-                                    'e_prod', 'e_con', 'c_eff', 'e_eff', 
-                                    'e_cap_min_use', 'e_ramping'] #these can be numeric, avoiding true/false constraints
-        allowed_timeseries_data = ['om_var', 'om_fuel',
-                                'om_rb','sub_var'] #variable costs/revenue only
-        for k, v in self.config_model.as_dict_flat().items(): #flatten the dictionary to get e.g. techs.ccgt.constraints.e_eff as keys
-            if isinstance(v,str):
-                if v.startswith("file"): #find any refering to a file
-                    params = k.split('.') #split the elements of the key to get constraint/cost type
-                    if params[-1] == 'r':
-                        return None
-                    if params[-1] in allowed_timeseries_constraints: #look for e.g. e_eff
-                        time_series_constraint.append(params[-1])
-                    elif params[-1] in allowed_timeseries_data: #look for e.g. om_fuel
-                        #make sure list e.g. ['costs','monetary','om_fuel'] doesn't already exist
-                        if str(time_series_data).find(str([params[-3],params[-2],params[-1]])) == -1: 
-                            time_series_data.append([params[-3],params[-2],params[-1]])
-                    else:
-                        raise Exception("unable to handle loading data from file for '{}'".format(params[-1]))
-        #send list of parameters to config_model AttrDict
-        self.config_model['timeseries_constraints'] = list(set(time_series_constraint))
-        self.config_model['timeseries_data'] = time_series_data
+        # Get timeseries constraints/costs/revenue
+        self.initialize_timeseries()
 
         # Read data and apply time resolution adjustments
         self.read_data()
@@ -261,6 +238,41 @@ class Model(BaseModel):
         self.config_model.locations = locations.process_locations(locs)
         # As a final step, flush the option cache
         self.flush_option_cache()
+    
+    def initialize_timeseries(self):
+        """
+        Find any constraints/costs/revenue values requested as from 'file' in YAMLs
+        and store that information
+        """
+        time_series_constraint = ['r']
+        time_series_data = []
+        # These can be numeric, avoiding true/false constraints.
+        # No c_eff due to disagreement with non-timeseries constraint
+        # c_e_cap_gross_net_rule.
+        allowed_timeseries_constraints = ['r_eff', 'r_scale', 'rb_eff', 's_loss',
+                                    'e_prod', 'e_con', 'c_eff', 'e_eff', 
+                                    'e_cap_min_use', 'e_ramping'] 
+        #variable costs/revenue only
+        allowed_timeseries_data = ['om_var', 'om_fuel',
+                                'om_rb','sub_var'] 
+        #flatten the dictionary to get e.g. techs.ccgt.constraints.e_eff as keys
+        for k, v in self.config_model.as_dict_flat().items(): 
+            if isinstance(v,str):
+                if v.startswith("file"): #find any refering to a file
+                    params = k.split('.') #split the elements of the key to get constraint/cost type
+                    if params[-1] == 'r':
+                        None # 'r' already in the list automatically
+                    elif params[-1] in allowed_timeseries_constraints: #look for e.g. e_eff
+                        time_series_constraint.append(params[-1])
+                    elif params[-1] in allowed_timeseries_data: #look for e.g. om_fuel
+                        #make sure list e.g. ['costs','monetary','om_fuel'] doesn't already exist
+                        if str(time_series_data).find(str([params[-3],params[-2],params[-1]])) == -1: 
+                            time_series_data.append([params[-3],params[-2],params[-1]])
+                    else:
+                        raise Exception("unable to handle loading data from file for '{}'".format(params[-1]))
+        #send list of parameters to config_model AttrDict
+        self.config_model['timeseries_constraints'] = list(set(time_series_constraint))
+        self.config_model['timeseries_data'] = time_series_data
 
     def initialize_time(self):
         # Carry y_ subset sets over to data for easier data analysis
@@ -1462,7 +1474,7 @@ class Model(BaseModel):
 
             # Adjust for the fact that variable costs are only accrued over
             # the t_subset period
-            revenue_variable = self.get_var('revenue_variable')[{'t': t_subset}].sum(dim='t')
+            revenue_variable = self.get_var('revenue_var')[{'t': t_subset}].sum(dim='t')
 
             return revenue_fixed + revenue_variable
 
@@ -1501,7 +1513,7 @@ class Model(BaseModel):
             for carrier in self._sets['c']:
                 # Levelized cost of electricity (LCOE)
                 with np.errstate(divide='ignore', invalid='ignore'):  # don't warn about division by zero
-                    lc = sol['costs'].loc[dict(k=cost)] / sol['ec_prod'].loc[dict(c=carrier)]
+                    lc = sol['costs'].loc[dict(kc=cost)] / sol['ec_prod'].loc[dict(c=carrier)]
                 lc = lc.to_pandas()
 
                 # Make sure the dataframe has y as columns and x as index

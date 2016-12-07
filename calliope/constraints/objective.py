@@ -12,10 +12,9 @@ Objective functions.
 import pyomo.core as po
 
 
-def objective_cost_minimization(model):
+def objective_cost_minimization_exc_rev(model):
     """
-    Minimizes total system monetary cost. Used as a default if
-    a model does not specify another objective.
+    Minimizes total system monetary cost. 
 
     """
     m = model.m
