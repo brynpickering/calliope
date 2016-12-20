@@ -589,6 +589,82 @@ class Model(BaseModel):
             )
         return eff_ref
 
+    def get_cap_constraint(self, var, y, x, sense='max'):
+        """
+        function used in operational mode to get capacities.
+
+        These capacities are not decision variables in operational mode, so
+        need to be given as parameters instead.
+
+        This function is also used in post-processing to get a DataArray of
+        capacities.
+
+        Args:
+            var = str; paramater name, 'e_cap', 's_cap', 'r_area', 'r_cap', or
+                'rb_cap'.
+            y = str; technology
+            x = str; location
+            sense = str; 'max' or 'min' to get either maximum or minimum capacity
+        """
+        scale = 1
+        if 'demand' in y:
+            # no maximums are defined for a demand source, only r
+            if var is 'e_cap' or var is 'r_cap':
+                return -float(self.data.r.loc[dict(y=y)].min(dim='t'))
+            # r_area exists in the calculation of rs, so must be > 0 for demand
+            elif var is 'r_area':
+                return 1.0
+        if (var == 'r_cap' and
+            self.get_option(y + '.constraints.r_cap_equals_e_cap', x=x)):
+            var = 'e_cap'
+        elif (var =='rb_cap' and
+              self.get_option(y + '.constraints.rb_cap_follow', x=x)):
+            var = self.get_option(y + '.constraints.rb_cap_follow', x=x)
+        elif (var == 'r_area' and
+              self.get_option(y + '.constraints.r_area_per_e_cap', x=x)):
+            var = 'e_cap'
+            scale = (scale
+                * self.get_option(y + '.constraints.r_area_per_e_cap', x=x))
+
+        _equals = self.get_option(y + '.constraints.' + var + '.equals', x=x)
+        _max = self.get_option(y + '.constraints.' + var + '.max', x=x)
+        _min = self.get_option(y + '.constraints.' + var + '.min', x=x)
+
+        if self.get_option(y + '.constraints.e_cap_scale', x=x):
+            scale = scale * self.get_option(y + '.constraints.e_cap_scale', x=x)
+
+        _equals = scale * _equals
+        _min = scale * _min
+        _max = scale * _max
+
+        # Update `s_cap` information if `use_s_time` is defined
+        if (var == 's_cap'
+            and self.get_option(y + '.constraints.use_s_time', x=x)):
+            s_time_max = self.get_option(y + '.constraints.s_time.max', x=x)
+            e_cap = self.get_option(y + '.constraints.e_cap.equals', x=x)
+            if not e_cap:
+                e_cap = self.get_option(y + '.constraints.e_cap.max', x=x)
+            #look into updating this to account for time dependancy (defined in core.py)
+            e_eff_ref = self.get_eff_ref('e', y)
+            _equals = s_time_max * e_cap * scale / e_eff_ref
+
+        if sense == 'max':
+            if _equals:
+                model_max = _equals
+            else:
+                model_max = _max
+            if np.isinf(model_max):
+                model_max = None  # to disable upper bound
+            return model_max
+        if sense == 'min':
+            if _equals:
+                model_min = _equals
+            else:
+                model_min = _min
+            if np.isinf(model_min):
+                model_min = None  # to disable lower bound
+            return model_min
+
     def scale_to_peak(self, df, peak, scale_time_res=True):
         """Returns the given dataframe scaled to the given peak value.
 
@@ -1174,17 +1250,22 @@ class Model(BaseModel):
         self.add_constraint(constraints.base_planning.generate_variables)
 
         # 1. Required
-        constr = [constraints.base_planning.node_resource,
-                  constraints.base_planning.node_energy_balance,
-                  constraints.base_planning.node_constraints_build,
-                  constraints.base_planning.node_constraints_operational,
-                  constraints.base_planning.node_constraints_transmission,
-                  #constraints.base_planning.node_parasitics,
-                  constraints.base_planning.node_costs,
-                  constraints.base_planning.model_constraints]
         if self.mode == 'plan':
-            constr += [constraints.planning.system_margin,
-                       constraints.planning.node_constraints_build_total]
+            constr = [constraints.base_planning.node_resource,
+                      constraints.base_planning.node_energy_balance,
+                      constraints.base_planning.node_constraints_build,
+                      constraints.base_planning.node_constraints_operational,
+                      constraints.base_planning.node_constraints_transmission,
+                      constraints.base_planning.node_costs,
+                      constraints.base_planning.model_constraints,
+                      constraints.base_planning.system_margin,
+                      constraints.base_planning.node_constraints_build_total]
+        elif self.mode == 'operate':
+            constr = [constraints.base_operational.node_resource,
+                      constraints.base_operational.node_energy_balance,
+                      constraints.base_operational.node_constraints_operational,
+                      constraints.base_operational.node_costs,
+                      constraints.base_operational.model_constraints]
         for c in constr:
             self.add_constraint(c)
 
@@ -1449,7 +1530,7 @@ class Model(BaseModel):
         p['e'] = self.get_c_sum()
         return p
 
-    def get_e_cap_net(self):
+    def get_p_eff(self):
         # Create a DataFrame of p_eff to combine with the decision variable e_cap
         # to get e_cap_net
         m = self.m
@@ -1460,17 +1541,35 @@ class Model(BaseModel):
         p_eff.index = pd.MultiIndex.from_tuples(p_eff.index, names=['y','x'])
         p_eff = p_eff[0].unstack(level=0).sort_index()
 
-        return self.get_var('e_cap') * p_eff
+        return p_eff
+
+    def get_capacities(self, param):
+        # Create a DataFrame of p_eff to combine with the decision variable e_cap
+        # to get e_cap_net
+        m = self.m
+        param_array = pd.DataFrame.from_dict({(y,x):
+                                        self.get_cap_constraint(param, y, x)
+                                        for y in m.y for x in m.x},
+                                       orient = 'index')
+        param_array.index = pd.MultiIndex.from_tuples(param_array.index,
+                                                      names=['y','x'])
+        param_array = param_array[0].unstack(level=0).sort_index()
+
+        return param_array
 
     def get_node_parameters(self):
         detail = ['s_cap', 'r_cap', 'r_area', 'e_cap']
-        result = xr.Dataset({v: self.get_var(v) for v in detail})
-        result['e_cap_net'] = self.get_e_cap_net()
-        try:
-            result['rb_cap'] = self.get_var('rb_cap')
-        except exceptions.ModelError:
-            result['rb_cap'] = result['r_cap'].copy()  # get same dimensions
-            result['rb_cap'].loc[:] = 0
+        if self.mode == 'plan':
+            result = xr.Dataset({v: self.get_var(v) for v in detail})
+            try:
+                result['rb_cap'] = self.get_var('rb_cap')
+            except exceptions.ModelError:
+                result['rb_cap'] = result['r_cap'].copy()  # get same dimensions
+                result['rb_cap'].loc[:] = 0
+        else: #operational mode
+            detail.append('rb_cap')
+            result = xr.Dataset({v: self.get_capacities(v) for v in detail})
+        result['e_cap_net'] = self.get_p_eff() * result['e_cap'].to_pandas()
         return result
 
     def get_costs(self, t_subset=None):

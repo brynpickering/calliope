@@ -37,7 +37,7 @@ def create_and_run_model(override, iterative_warmstart=False):
     return model
 
 class TestModel:
- 
+
     # all constraints are fixed values
     def test_model_fixed(self):
         override = """override:"""
