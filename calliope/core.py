@@ -1154,7 +1154,7 @@ class Model(BaseModel):
         # Piecewise
         if self.functionality_switch('piecewise'):
             N = len(list(self.config_model.pieces.as_dict_flat().values())[0])
-            m.pieces =po.Set(initialize=list(range(N-1)), ordered=True)
+            m.pieces =po.Set(initialize=list(range(N)), ordered=True)
             y_piecewise_temp = []
             for y in self._sets['y_conv']:
                 if 'piecewise' in self.get_option(y):
