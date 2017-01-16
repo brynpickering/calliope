@@ -180,24 +180,20 @@ def node_energy_balance(model):
         if slopes == sorted(slopes): # constantly increasing gradient
             return (-1 * m.es_con[c_source, y, x, t] >= slopes[p]
                     * m.es_prod[c_prod, y, x, t] + intercept * m.C[y, x, t])
-        elif slopes == sorted(slopes, reverse=True):
-            if m.es_con[c_source, y, x, t] == 0:
-                return ( 0 >= slopes[p] * m.es_prod[c_prod, y, x, t] +
-                        intercept * m.C[y, x, t])
-            else:
-                return ( -1 / m.es_con[c_source, y, x, t] >= slopes[p]
-                    * m.es_prod[c_prod, y, x, t] + intercept * m.C[y, x, t])
+        else:
+            raise exceptions.ModelError('Incorrect curve shape for {}:{} '
+                                        'consumption vs. production'.format(y, x))
 
     def intercept_dummy(m, y, x, t):
         e_cap = model.get_option(y + '.constraints.e_cap.max')
         return m.C[y, x, t] <= e_cap * m.operation[y, x, t]
 
     def intercept_dummy_2(m, y, x, t):
-        return m.C[y, x, t] <= e_cap[y, x]
+        return m.C[y, x, t] <= m.e_cap[y, x]
 
     def intercept_dummy_3(m, y, x, t):
         e_cap = model.get_option(y + '.constraints.e_cap.max')
-        return m.C[y, x, t] >= e_cap[y, x] - (1 - m.operation[y, x, t]) * e_cap
+        return m.C[y, x, t] >= m.e_cap[y, x] - (1 - m.operation[y, x, t]) * e_cap
 
     def conversion_rule_np(m, y, x, t):
         c_prod = model.get_option(y + '.carrier')
@@ -253,10 +249,15 @@ def node_energy_balance(model):
     # Constraints
     m.c_s_balance_transmission = po.Constraint(m.y_trans, m.x, m.t,
                                                rule=transmission_rule)
-    m.c_s_balance_conversion_not_piecewise = po.Constraint(m.y_conv_not_piecewise,
-                                                           m.x, m.t,
-                                                           rule=conversion_rule_np)
-    m.c_s_balance_conversion_piecewise = po.Constraint(m.pieces, m.y_piecewise,
+    if model.functionality_switch('piecewise'):
+        m.c_s_balance_conversion_not_piecewise = po.Constraint(m.y_conv_not_piecewise,
+                                                               m.x, m.t,
+                                                               rule=conversion_rule_np)
+    else:
+        m.c_s_balance_conversion = po.Constraint(m.y_conv, m.x, m.t,
+                                                 rule=conversion_rule_np)
+    if model.functionality_switch('piecewise'):
+        m.c_s_balance_conversion_piecewise = po.Constraint(m.pieces, m.y_piecewise,
                                                            m.x, m.t,
                                                            rule=conversion_rule_p)
     m.c_s_intercept_dummy = po.Constraint(m.y_conv, m.x, m.t, rule = intercept_dummy)
@@ -458,18 +459,14 @@ def node_constraints_operational(model):
             #would be better to have a set of techs with a secondary carrier at start
             c_1 = model.get_option(y + '.carrier')
             c_2 = c
-            slopes = model.config_model.pieces[y][c_source].slope
-            intercept = model.config_model.pieces[y][c_source].intercept[p]
-            if slopes == sorted(slopes): # constantly increasing gradient
-                return (-1 * m.es_prod[c_2, y, x, t] >= slopes[p]
+            slopes = model.config_model.pieces[y]['htp'].slope
+            intercept = model.config_model.pieces[y]['htp'].intercept[p]
+            if slopes == sorted(slopes, reverse=True):
+                return ( m.es_prod[c_2, y, x, t] <= slopes[p]
                     * m.es_prod[c_1, y, x, t] + intercept * m.C[y, x, t])
-            elif slopes == sorted(slopes, reverse=True):
-                if m.es_prod[c_2, y, x, t] == 0:
-                    return ( 0 >= slopes[p]
-                    * m.es_prod[c_1, y, x, t] + intercept * m.C[y, x, t])
-                else:
-                    return ( -1 / m.es_prod[c_2, y, x, t] >= slopes[p]
-                    * m.es_prod[c_1, y, x, t] + intercept * m.C[y, x, t])
+            else:
+                raise exceptions.ModelError('Incorrect curve shape for {}:{} htp'
+                                            ''.format(y, x))
         else:
             return po.Constraint.Skip
 
@@ -516,8 +513,9 @@ def node_constraints_operational(model):
                                      rule=c_rs_max_lower_rule)
     m.c_es_prod_max = po.Constraint(m.c, m.y, m.x, m.t,
                                     rule=c_es_prod_max_rule)
-    m.c_es_prod_max_htp = po.Constraint(m.pieces, m.c, m.y, m.x, m.t,
-                                    rule=c_es_prod_max_rule_htp)
+    if model.functionality_switch('piecewise'):
+        m.c_es_prod_max_htp = po.Constraint(m.pieces, m.c, m.y_piecewise, m.x, m.t,
+                                            rule=c_es_prod_max_rule_htp)
     m.c_es_prod_min = po.Constraint(m.c, m.y, m.x, m.t,
                                     rule=c_es_prod_min_rule)
     m.c_es_con_max = po.Constraint(m.c, m.y, m.x, m.t,
@@ -845,7 +843,7 @@ def model_constraints(model):
             if c == 'power':
                 return balance == 0
             else:  # e.g. for heat, 5% additional allowed
-                return (0, balance,50)
+                return (0, balance, 50)
         else:
             return po.Constraint.NoConstraint
 

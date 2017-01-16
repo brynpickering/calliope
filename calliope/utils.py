@@ -260,6 +260,8 @@ class AttrDict(dict):
                     result.set_key(k, float(v))
                 elif isinstance(v, np.integer):
                     result.set_key(k, int(v))
+                elif isinstance(v, np.ndarray):
+                    result.set_key(k, list(v))
             result = result.as_dict()
         else:
             result = self.as_dict()

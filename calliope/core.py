@@ -604,12 +604,8 @@ class Model(BaseModel):
             for c in self.config_model.pieces[y].keys():
                 slope = self.config_model.pieces[y][c].slope = []
                 intercept = self.config_model.pieces[y][c].intercept = []
-                if 'con' in self.config_model.pieces[y][c].keys():
-                    con = self.config_model.pieces[y][c].con
-                    prod = self.config_model.pieces[y][c].prod
-                else: #htp
-                    con = self.config_model.pieces[y][c].c_2
-                    prod = self.config_model.pieces[y][c].c_1
+                con = self.config_model.pieces[y][c].con
+                prod = self.config_model.pieces[y][c].prod
                 for N in range(len(con)-1):
                     if (con[N+1] - con[N-1]) != 0:
                         slope.append((con[N+1] - con[N])/ # m = (y2 - y1) / (x1 - x2)
@@ -641,6 +637,20 @@ class Model(BaseModel):
                 e = exceptions.ModelError
                 raise e('Parent `' + v + '` of technology `' +
                         k + '` is not defined.')
+
+    @utils.memoize_instancemethod
+    def functionality_switch(self, func_name):
+        """
+        Check if a given functionality of the model is required, based on whether
+        there is any reference to it in model configuration.
+        Currently used to switch `revenue` on and off
+
+        Args:
+         - func_name: str; the funcitonality to check
+
+        Returns: bool; Whether the functionality is switched is on (True) or off (False)
+        """
+        return any([func_name in i for i in self.config_model.as_dict_flat().keys()])
 
     @utils.memoize_instancemethod
     def ischild(self, y, of):
@@ -1142,20 +1152,20 @@ class Model(BaseModel):
         m.y_np = po.Set(initialize=set_no_parasitics, within=m.y)
 
         # Piecewise
-        if 'pieces' in self.config_model.keys():
+        if self.functionality_switch('piecewise'):
             N = len(list(self.config_model.pieces.as_dict_flat().values())[0])
-            m.pieces =po.Set(initialize=list(range(N), ordered=True))
+            m.pieces =po.Set(initialize=list(range(N-1)), ordered=True)
             y_piecewise_temp = []
-            for y in self.config_model.pieces:
-                y_piecewise_temp.append(y)
-            m.y_piecewise = po.Set(initialize=y_piecewise_temp, within=m.y, ordered = True)
+            for y in self._sets['y_conv']:
+                if 'piecewise' in self.get_option(y):
+                    y_piecewise_temp.append(y)
+            m.y_piecewise = po.Set(initialize=y_piecewise_temp, within=m.y_conv, ordered = True)
             y_conv_not_piecewise_temp = self._sets['y_conv']
             for y in y_piecewise_temp:
                 if y in y_conv_not_piecewise_temp:
                     y_conv_not_piecewise_temp.remove(y)
             m.y_conv_not_piecewise = po.Set(initialize=y_conv_not_piecewise_temp,
                                             within=m.y, ordered = True)
-
         #
         # Parameters
         #
