@@ -183,6 +183,10 @@ class Model(BaseModel):
         self.mode = self.config_run.mode
         self.initialize_time()
 
+        # Initialise pieces
+        if 'pieces' in self.config_model.keys():
+            self.set_piecewise_curves()
+
     def override_model_config(self, override_dict):
         od = override_dict
         if 'data_path' in od.keys_nested():
@@ -238,7 +242,7 @@ class Model(BaseModel):
         self.config_model.locations = locations.process_locations(locs)
         # As a final step, flush the option cache
         self.flush_option_cache()
-    
+
     def initialize_timeseries(self):
         """
         Find any constraints/costs/revenue values requested as from 'file' in YAMLs
@@ -250,13 +254,13 @@ class Model(BaseModel):
         # No c_eff due to disagreement with non-timeseries constraint
         # c_e_cap_gross_net_rule.
         allowed_timeseries_constraints = ['r_eff', 'r_scale', 'rb_eff', 's_loss',
-                                    'e_prod', 'e_con', 'c_eff', 'e_eff', 
-                                    'e_cap_min_use', 'e_ramping'] 
+                                    'e_prod', 'e_con', 'c_eff', 'e_eff',
+                                    'e_cap_min_use', 'e_ramping']
         #variable costs/revenue only
         allowed_timeseries_data = ['om_var', 'om_fuel',
-                                'om_rb','sub_var'] 
+                                'om_rb','sub_var']
         #flatten the dictionary to get e.g. techs.ccgt.constraints.e_eff as keys
-        for k, v in self.config_model.as_dict_flat().items(): 
+        for k, v in self.config_model.as_dict_flat().items():
             if isinstance(v,str):
                 if v.startswith("file"): #find any refering to a file
                     params = k.split('.') #split the elements of the key to get constraint/cost type
@@ -266,7 +270,7 @@ class Model(BaseModel):
                         time_series_constraint.append(params[-1])
                     elif params[-1] in allowed_timeseries_data: #look for e.g. om_fuel
                         #make sure list e.g. ['costs','monetary','om_fuel'] doesn't already exist
-                        if str(time_series_data).find(str([params[-3],params[-2],params[-1]])) == -1: 
+                        if str(time_series_data).find(str([params[-3],params[-2],params[-1]])) == -1:
                             time_series_data.append([params[-3],params[-2],params[-1]])
                     else:
                         raise Exception("unable to handle loading data from file for '{}'".format(params[-1]))
@@ -595,6 +599,25 @@ class Model(BaseModel):
             scale = float(df.max())
         return (df / scale) * peak * adjustment
 
+    def set_piecewise_curves(self):
+        for y in self.config_model.pieces.keys():
+            for c in self.config_model.pieces[y].keys():
+                slope = self.config_model.pieces[y][c].slope = []
+                intercept = self.config_model.pieces[y][c].intercept = []
+                if 'con' in self.config_model.pieces[y][c].keys():
+                    con = self.config_model.pieces[y][c].con
+                    prod = self.config_model.pieces[y][c].prod
+                else: #htp
+                    con = self.config_model.pieces[y][c].c_2
+                    prod = self.config_model.pieces[y][c].c_1
+                for N in range(len(con)-1):
+                    if (con[N+1] - con[N-1]) != 0:
+                        slope.append((con[N+1] - con[N])/ # m = (y2 - y1) / (x1 - x2)
+                                     (prod[N+1] - prod[N]))
+                    else:
+                        slope.append(0)
+                    intercept.append(con[N] - slope[N] * prod[N]) # c = y - mx
+
     def initialize_parents(self):
         techs = self.config_model.techs
         try:
@@ -703,6 +726,7 @@ class Model(BaseModel):
 
         # Initialize transmission technologies
         sets.init_y_trans(self)
+
 
         # set 'y' is now complete, ensure that all techs conform to the
         # rule that only "head" techs can be used in the model
@@ -901,7 +925,7 @@ class Model(BaseModel):
         s_init.index.name = 'x'
         data['s_init'] = xr.DataArray(s_init)
 
-        
+
         # Parameters that may be defined over (x, y, t)
         ts_sets = {'y_def_' + k: set() for k in self.config_model.timeseries_constraints}
         self._sets = {**self._sets, **ts_sets}
@@ -915,7 +939,7 @@ class Model(BaseModel):
                 option = self.get_option(k)
 
                 df = self._read_param_for_tech(param, y, time_res, option, x=None)
-                
+
                 for x in self._sets['x']:
                     # Check for each x whether it defines an override
                     # that is different from the generic option, and if so,
@@ -940,7 +964,7 @@ class Model(BaseModel):
                 option = self.get_cost(param[2], y, param[1], costs_type=param[0])
 
                 df = self._read_param_for_tech(param, y, time_res, option, x=None)
-                
+
                 for x in self._sets['x']:
                     # Check for each x whether it defines an override
                     # that is different from the generic option, and if so,
@@ -1117,6 +1141,21 @@ class Model(BaseModel):
         set_no_parasitics = set(self._sets['y']) - set(self._sets['y_p'])
         m.y_np = po.Set(initialize=set_no_parasitics, within=m.y)
 
+        # Piecewise
+        if 'pieces' in self.config_model.keys():
+            N = len(list(self.config_model.pieces.as_dict_flat().values())[0])
+            m.pieces =po.Set(initialize=list(range(N), ordered=True))
+            y_piecewise_temp = []
+            for y in self.config_model.pieces:
+                y_piecewise_temp.append(y)
+            m.y_piecewise = po.Set(initialize=y_piecewise_temp, within=m.y, ordered = True)
+            y_conv_not_piecewise_temp = self._sets['y_conv']
+            for y in y_piecewise_temp:
+                if y in y_conv_not_piecewise_temp:
+                    y_conv_not_piecewise_temp.remove(y)
+            m.y_conv_not_piecewise = po.Set(initialize=y_conv_not_piecewise_temp,
+                                            within=m.y, ordered = True)
+
         #
         # Parameters
         #
@@ -1126,7 +1165,7 @@ class Model(BaseModel):
             # param_data = self.data[param].to_dataframe().reorder_levels(['y', 'x', 't']).to_dict()[param]
             initializer = self._param_populator(self.data, param)
             setattr(m, param, po.Param(y, m.x, m.t, initialize=initializer, mutable=True))
-        
+
         # Probably unnecessary addition to have these as Pyomo parameters.
         for param in self.config_model.timeseries_data:
             # param_data = self.data[param].to_dataframe().reorder_levels(['y', 'x', 't']).to_dict()[param]
