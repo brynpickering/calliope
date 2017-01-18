@@ -184,7 +184,8 @@ class Model(BaseModel):
         self.initialize_time()
 
         # Initialise pieces
-        if 'pieces' in self.config_model.keys():
+        if ('pieces' in self.config_model.keys()
+            and 'piecewise_info' in self.config_model.keys()):
             self.set_piecewise_curves()
 
     def override_model_config(self, override_dict):
@@ -600,19 +601,22 @@ class Model(BaseModel):
         return (df / scale) * peak * adjustment
 
     def set_piecewise_curves(self):
-        for y in self.config_model.pieces.keys():
-            for c in self.config_model.pieces[y].keys():
-                slope = self.config_model.pieces[y][c].slope = []
-                intercept = self.config_model.pieces[y][c].intercept = []
-                con = self.config_model.pieces[y][c].con
-                prod = self.config_model.pieces[y][c].prod
-                for N in range(len(con)-1):
-                    if (con[N+1] - con[N-1]) != 0:
-                        slope.append((con[N+1] - con[N])/ # m = (y2 - y1) / (x1 - x2)
-                                     (prod[N+1] - prod[N]))
+        N = self.config_model.piecewise_info.N
+        opt_eq = self.config_model.piecewise_info.linearisation
+        working_tree = self.config_model.pieces[str(N)][opt_eq]
+        for y in working_tree.keys():
+            for c in working_tree[y].keys():
+                slope = working_tree[y][c].slope = []
+                intercept = working_tree[y][c].intercept = []
+                con = working_tree[y][c].con
+                prod = working_tree[y][c].prod
+                for n in range(N):
+                    if (con[n+1] - con[n-1]) != 0:
+                        slope.append((con[n+1] - con[n])/ # m = (y2 - y1) / (x1 - x2)
+                                     (prod[n+1] - prod[n]))
                     else:
                         slope.append(0)
-                    intercept.append(con[N] - slope[N] * prod[N]) # c = y - mx
+                    intercept.append(con[n] - slope[n] * prod[n]) # c = y - mx
 
     def initialize_parents(self):
         techs = self.config_model.techs
@@ -1153,8 +1157,8 @@ class Model(BaseModel):
 
         # Piecewise
         if self.functionality_switch('piecewise'):
-            N = len(list(self.config_model.pieces.as_dict_flat().values())[0])
-            m.pieces =po.Set(initialize=list(range(N)), ordered=True)
+            N = self.config_model.piecewise_info.N
+            m.pieces = po.Set(initialize=list(range(N)), ordered=True)
             y_piecewise_temp = []
             for y in self._sets['y_conv']:
                 if 'piecewise' in self.get_option(y):

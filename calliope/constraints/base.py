@@ -175,8 +175,11 @@ def node_energy_balance(model):
     def conversion_rule_p(m, p, y, x, t):
         c_prod = model.get_option(y + '.carrier')
         c_source = model.get_option(y + '.source_carrier')
-        slopes = model.config_model.pieces[y][c_source].slope
-        intercept = model.config_model.pieces[y][c_source].intercept[p]
+        N = model.config_model.piecewise_info.N
+        opt_eq = model.config_model.piecewise_info.linearisation
+        working_tree = model.config_model.pieces[str(N)][opt_eq]
+        slopes = working_tree[y][c_source].slope
+        intercept = working_tree[y][c_source].intercept[p]
         if slopes == sorted(slopes): # constantly increasing gradient
             return (-1 * m.es_con[c_source, y, x, t] >= slopes[p]
                     * m.es_prod[c_prod, y, x, t] + intercept * m.C[y, x, t])
@@ -459,8 +462,11 @@ def node_constraints_operational(model):
             #would be better to have a set of techs with a secondary carrier at start
             c_1 = model.get_option(y + '.carrier')
             c_2 = c
-            slopes = model.config_model.pieces[y]['htp'].slope
-            intercept = model.config_model.pieces[y]['htp'].intercept[p]
+            N = model.config_model.piecewise_info.N
+            opt_eq = model.config_model.piecewise_info.linearisation
+            working_tree = model.config_model.pieces[str(N)][opt_eq]
+            slopes = working_tree[y]['htp'].slope
+            intercept =working_tree[y]['htp'].intercept[p]
             if slopes == sorted(slopes, reverse=True):
                 return ( m.es_prod[c_2, y, x, t] <= slopes[p]
                     * m.es_prod[c_1, y, x, t] + intercept * m.C[y, x, t])
