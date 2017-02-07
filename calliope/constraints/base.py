@@ -143,12 +143,30 @@ def node_energy_balance(model):
 
     def get_e_eff_per_distance(model, y, x):
         try:
-            e_loss = get_any_option(y + '.constraints_per_distance.e_loss', x=x)
-            per_distance = model.get_option(y + '.per_distance')
-            distance = model.get_option(y + '.distance')
-            return 1 - (e_loss * (distance / per_distance))
+            e_loss = model.get_option(y + '.constraints_per_distance.e_loss', x=x)
         except exceptions.OptionNotSetError:
             return 1.0
+        try:
+            per_distance = model.get_option(y + '.per_distance')
+        except: # assume one unit distance
+            per_distance = 1
+        # assuming only tranmission techs are passed into distance_getter:
+        tech, x2 = y.split(':')
+        try:
+            link = model.config_model.get_key('links.'+ x + ',' + x2,
+                   default=model.config_model['links'].get(x2 + ',' + x))
+        except: #no link
+            return 1.0
+        try:
+            distance = link.get_key(tech + '.distance')
+        except KeyError:
+            e = exceptions.OptionNotSetError
+            raise e('Distance must be defined for '
+                    'link: {} and transmission tech: {}, '
+                    'as e_loss per distance is defined'.format(x + ',' + x2, tech))
+        except:
+            return 1.0
+        return 1 - (e_loss * (distance / per_distance))
 
     # Variables
     m.s = po.Var(m.y_pc, m.x, m.t, within=po.NonNegativeReals)
@@ -567,7 +585,7 @@ def node_costs(model):
 
     cost_getter = utils.cost_getter(model.get_option)
     depreciation_getter = utils.depreciation_getter(model.get_option)
-    cost_per_distance_getter = utils.cost_per_distance_getter(model.get_option)
+    cost_per_distance_getter = utils.cost_per_distance_getter(model.config_model)
 
     @utils.memoize
     def _depreciation_rate(y, k):
@@ -653,8 +671,8 @@ def node_costs(model):
         if y in m.y_trans:
             # Divided by 2 for transmission techs because construction costs
             # are counted at both ends
-            cap_fixed = cap_fixed/2 
-        return (m.cost_con_fixed[y,x,k] == m.purchased[y,x] * cap_fixed)
+            cap_fixed = (cap_fixed + _cost_per_distance('cap_fixed', y, k, x))/ 2
+        return (m.cost_con_fixed[y, x, k] == m.purchased[y, x] * cap_fixed)
 
     def c_cost_op_fixed_rule(m, y, x, k):
         if y in m.y:
