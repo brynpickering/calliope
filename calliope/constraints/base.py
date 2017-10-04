@@ -173,6 +173,7 @@ def node_energy_balance(model):
     m.es_prod = po.Var(m.c, m.y, m.x, m.t, within=po.NonNegativeReals)
     m.es_con = po.Var(m.c, m.y, m.x, m.t, within=po.NegativeReals)
     m.operation = po.Var(m.y_conv, m.x, m.t, within=po.Boolean)
+    # this is equal to m.e_cap in any timestep that m.operation is 1, 0 when m.operation is zero:
     m.C = po.Var(m.y_conv, m.x, m.t, within=po.NonNegativeReals)
     # used to be defined in node_constraints_build, moved to work with piecewise:
 

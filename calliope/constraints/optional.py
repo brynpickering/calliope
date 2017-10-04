@@ -556,3 +556,57 @@ def fixed_cost(model):
     m.c_purchased = po.Constraint(m.y, m.x, rule=purchased_rule)
     m.c_cost = po.Constraint(m.y, m.x, m.kc, rule=c_cost_rule)
     m.c_cost_con_fixed = po.Constraint(m.y, m.x, m.kc, rule=cost_con_fixed_rule)
+
+def max_r_area_per_loc(model):
+    """
+    ``r_area`` of all technologies requiring physical space cannot exceed the
+    available area of a location. Available area defined for parent locations
+    (in which there are locations defined as being 'within' it) will set the
+    available area limit for the sum of all the family (parent + all descendants).
+
+    To define, assign a value to ``available_area`` for a given location, e.g.::
+
+        locations:
+            r1:
+                techs: ['csp']
+                available_area: 100000
+
+    To avoid including descendants in area limitation, ``ignore_descendants``
+    can be specified as True for the location, at the same level as ``available_area``.
+
+    """
+    m = model.m
+    locations = model._locations
+
+
+    def _get_descendants(x):
+        """
+        Returns all locations in the family tree of location x, in one list.
+        """
+        descendants = []
+        children = list(locations[locations._within == x].index)
+        if not children:
+            return []
+        for child in children:
+            descendants += _get_descendants(child)
+        descendants += children
+        return descendants
+
+    def c_available_r_area_rule(m, x):
+        available_area = model.config_model.get_key(
+                            'locations.{}.available_area'.format(x), default=None)
+        if not available_area:
+            return po.Constraint.Skip
+        if model.config_model.get_key(
+            'locations.{}.ignore_descendants'.format(x), default=False):
+            descendants = []
+        else:
+            descendants = _get_descendants(x)
+        all_x = descendants + [x]
+        r_area_sum = sum(m.r_area[y, _x] for y in m.y_def_r for _x in all_x if
+                         model.get_option(y + '.constraints.r_area.max', x=_x)
+                         is not False and y not in m.y_demand)
+        # r_area_sum will be ``0`` if either ``m.y_r_area`` or ``all_x`` are empty
+        return (r_area_sum <= available_area)
+
+    m.c_available_r_area = po.Constraint(m.x, rule=c_available_r_area_rule)

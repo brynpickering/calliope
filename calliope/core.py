@@ -611,7 +611,7 @@ class Model(BaseModel):
                 con = working_tree[y][c].con
                 prod = working_tree[y][c].prod
                 for n in range(N):
-                    if (con[n+1] - con[n-1]) != 0:
+                    if (con[n+1] - con[n]) != 0:
                         slope.append((con[n+1] - con[n])/ # m = (y2 - y1) / (x1 - x2)
                                      (prod[n+1] - prod[n]))
                     else:

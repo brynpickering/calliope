@@ -142,8 +142,7 @@ def get_mean_from_clusters(data, clusters, timesteps_per_day):
 
 
 def find_nearest_vector_index(array, value):
-    return np.array([np.linalg.norm(x + y + z + u)
-                     for (x, y, z, u) in array - value]).argmin()
+    return np.array([np.linalg.norm(sum(y)) for y in array - value]).argmin()
 
 
 def get_closest_days_from_clusters(data, mean_data, clusters):
@@ -151,6 +150,9 @@ def get_closest_days_from_clusters(data, mean_data, clusters):
     dtindex = data['t'].to_index()
     ts_per_day = _get_timesteps_per_day(data)
     days = int(len(data['t']) / ts_per_day)
+    n_x = len(data['x'])
+    n_y = len(subset_y)
+
 
     chosen_days = {}
 
@@ -161,7 +163,7 @@ def get_closest_days_from_clusters(data, mean_data, clusters):
         target = mean_data['r'].loc[dict(t=subset_t, y=subset_y)].values
 
         lookup_array = data['r'].loc[dict(y=subset_y)].values
-        lookup_array = lookup_array.reshape((4, days, ts_per_day, 20)).transpose(1, 0, 2, 3)
+        lookup_array = lookup_array.reshape((n_y, days, ts_per_day, n_x)).transpose(1, 0, 2, 3)
 
         chosen_days[cluster] = find_nearest_vector_index(lookup_array, target)
 
