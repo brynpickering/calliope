@@ -1188,7 +1188,7 @@ class Model(object):
             # Only kep negative (=demand) values
             r_carrier.values[r_carrier.values > 0] = 0
             t_max_demands[c] = (r_carrier.sum(dim=['y', 'x']).to_pandas()
-                                                               .T.idxmin())
+                                                             .idxmin())
         return t_max_demands
 
     def add_constraint(self, constraint, *args, **kwargs):
