@@ -68,5 +68,5 @@ class TestModel:
 
     def test_model_costs(self, model):
         sol = model.solution
-        assert_almost_equal(sol['summary'].to_pandas().loc['ccgt', 'levelized_cost_monetary'], 0.1,
+        assert_almost_equal(sol['summary'].squeeze('scenarios').to_pandas().loc['ccgt', 'levelized_cost_monetary'], 0.1,
                             tolerance=0.001)

@@ -98,18 +98,28 @@ class TestModel:
                     """
         model1 = create_and_run_model(override1)
         assert_almost_equal(model1.solution.export.sum(), 1901.6, tolerance=0.01)
-        assert_almost_equal(model1.solution.c_con.loc[dict(y='demand_low_T', c='low_T')].sum()
+        assert_almost_equal(model1.solution.c_con.loc[dict(y='demand_low_T',
+                                                           c='low_T',
+                                                           scenarios=1)].sum()
                              - model1.solution.export.sum(),
-                             -model1.solution.c_prod.loc[dict(y='test_conversion_plus', c='low_T')].sum())
+                             -model1.solution.c_prod.loc[
+                                 dict(y='test_conversion_plus',
+                                      c='low_T',
+                                      scenarios=1)].sum())
 
         model2 = create_and_run_model(override2)
         assert_almost_equal(model2.solution.export.sum(), 1521.28, tolerance=0.01)
-        assert_almost_equal(model2.solution.c_con.loc[dict(c='V_low_T')].sum()
+        assert_almost_equal(model2.solution.c_con.loc[dict(c='V_low_T', scenarios=1)].sum()
                              - model2.solution.export.sum(),
-                             -model2.solution.c_prod.loc[dict(y='test_conversion_plus', c='V_low_T')].sum())
+                             -model2.solution.c_prod.loc[
+                                 dict(y='test_conversion_plus',
+                                      c='V_low_T',
+                                      scenarios=1)].sum())
 
         model3 = create_and_run_model(override3)
         assert_almost_equal(model3.solution.export.sum(), 32.4, tolerance=0.01)
-        assert_almost_equal(model3.solution.c_con.loc[dict(c='power')].sum()
+        assert_almost_equal(model3.solution.c_con.loc[dict(c='power',
+                                                           scenarios=1)].sum()
                              - model3.solution.export.sum(),
-                             -model3.solution.c_prod.loc[dict(c='power')].sum())
+                             -model3.solution.c_prod.loc[dict(c='power',
+                                                              scenarios=1)].sum())

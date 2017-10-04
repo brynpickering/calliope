@@ -23,7 +23,7 @@ def ramping_rate(model):
     time_res = model.data['_time_res'].to_series()
 
     # Constraint rules
-    def _ramping_rule(m, loc_tech, t, direction):
+    def _ramping_rule(m, loc_tech, t, s, direction):
         x, y = loc_tech.split(":", 1)
         # e_ramping: Ramping rate [fraction of installed capacity per hour]
         ramping_rate_value = model.get_option(y + '.constraints.e_ramping')
@@ -40,10 +40,10 @@ def ramping_rate(model):
                 carrier = model.get_option(y + '.carrier', default=y + '.carrier_out')
                 if isinstance(carrier, dict): # conversion_plus technology
                     carrier = model.get_carrier(y, 'out', primary=True)
-                diff = ((m.c_prod[carrier, loc_tech, t]
-                         + m.c_con[carrier, loc_tech, t]) / time_res.at[t]
-                        - (m.c_prod[carrier, loc_tech, model.prev_t(t)]
-                           + m.c_con[carrier, loc_tech, model.prev_t(t)])
+                diff = ((m.c_prod[carrier, loc_tech, t, s]
+                         + m.c_con[carrier, loc_tech, t, s]) / time_res.at[t]
+                        - (m.c_prod[carrier, loc_tech, model.prev_t(t), s]
+                           + m.c_con[carrier, loc_tech, model.prev_t(t), s])
                         / time_res.at[model.prev_t(t)])
                 max_ramping_rate = ramping_rate_value * m.e_cap[loc_tech]
                 if direction == 'up':
@@ -51,15 +51,17 @@ def ramping_rate(model):
                 else:
                     return -1 * max_ramping_rate <= diff
 
-    def c_ramping_up_rule(m, loc_tech, t):
-        return _ramping_rule(m, loc_tech, t, direction='up')
+    def c_ramping_up_rule(m, loc_tech, t, s):
+        return _ramping_rule(m, loc_tech, t, s, direction='up')
 
-    def c_ramping_down_rule(m, loc_tech, t):
-        return _ramping_rule(m, loc_tech, t, direction='down')
+    def c_ramping_down_rule(m, loc_tech, t, s):
+        return _ramping_rule(m, loc_tech, t, s, direction='down')
 
     # Constraints
-    m.c_ramping_up = po.Constraint(m.loc_tech, m.t, rule=c_ramping_up_rule)
-    m.c_ramping_down = po.Constraint(m.loc_tech, m.t, rule=c_ramping_down_rule)
+    m.c_ramping_up = po.Constraint(m.loc_tech, m.t, m.scenarios,
+        rule=c_ramping_up_rule)
+    m.c_ramping_down = po.Constraint(m.loc_tech, m.t, m.scenarios,
+        rule=c_ramping_down_rule)
 
 
 def group_fraction(model):
@@ -111,15 +113,15 @@ def group_fraction(model):
     m.demand_power_peak_group = group_set('demand_power_peak')
 
     # Constraint rules
-    def c_group_fraction_output_rule(m, c, output_group):
+    def c_group_fraction_output_rule(m, c, output_group, s):
         sign, fraction = sign_fraction(output_group, 'output')
         techs = techs_to_consider(supply_techs, 'output')
         rhs_loc_techs = [":".join([x, y]) for y in techs for x in m.x]
         lhs_loc_techs = [":".join([x, y]) for y in
                          model.get_group_members(output_group) for x in m.x]
-        rhs = (fraction * sum(m.c_prod[c, loc_tech, t]
+        rhs = (fraction * sum(m.c_prod[c, loc_tech, t, s]
             for loc_tech in rhs_loc_techs for t in m.t))
-        lhs = sum(m.c_prod[c, loc_tech, t]
+        lhs = sum(m.c_prod[c, loc_tech, t, s]
             for loc_tech in lhs_loc_techs for t in m.t)
         return equalizer(lhs, rhs, sign)
 
@@ -133,16 +135,16 @@ def group_fraction(model):
         lhs = sum(m.e_cap[loc_tech]  for loc_tech in lhs_loc_techs)
         return equalizer(lhs, rhs, sign)
 
-    def c_group_fraction_demand_power_peak_rule(m, c, demand_power_peak_group):
+    def c_group_fraction_demand_power_peak_rule(m, c, demand_power_peak_group, s):
         sign, fraction = sign_fraction(demand_power_peak_group,
                                        'demand_power_peak')
         margin = model.config_model.system_margin.get_key(c, default=0)
-        peak_timestep = model.t_max_demand.power
+        peak_timestep = model.t_max_demand.power[s]
         y = 'demand_power'
         lhs_loc_techs = [":".join([x, y]) for y in
             model.get_group_members(demand_power_peak_group) for x in m.x]
         # Calculate demand peak taking into account both r_scale and time_res
-        peak = (float(sum(model.m.r[":".join([x, y]), peak_timestep]
+        peak = (float(sum(model.m.r[":".join([x, y]), peak_timestep, s]
                       * model.get_option(y + '.constraints.r_scale', x=x)
                       for x in model.m.x))
                 / model.data.time_res_series.at[peak_timestep])
@@ -151,13 +153,13 @@ def group_fraction(model):
         return equalizer(lhs, rhs, sign)
 
     # Constraints
-    m.c_group_fraction_output = \
-        po.Constraint(m.c, m.output_group, rule=c_group_fraction_output_rule)
-    m.c_group_fraction_capacity = \
-        po.Constraint(m.c, m.capacity_group, rule=c_group_fraction_capacity_rule)
+    m.c_group_fraction_output = po.Constraint(m.c, m.output_group, m.scenarios,
+        rule=c_group_fraction_output_rule)
+    m.c_group_fraction_capacity = po.Constraint(m.c, m.capacity_group,
+        rule=c_group_fraction_capacity_rule)
     grp = m.demand_power_peak_group
-    m.c_group_fraction_demand_power_peak = \
-        po.Constraint(m.c, grp, rule=c_group_fraction_demand_power_peak_rule)
+    m.c_group_fraction_demand_power_peak = po.Constraint(m.c, grp, m.scenarios,
+        rule=c_group_fraction_demand_power_peak_rule)
 
 def max_r_area_per_loc(model):
     """

@@ -95,6 +95,9 @@ def apply_clustering(data, timesteps, clustering_func, how, normalize=True, **kw
         data_normalized = data_to_cluster
 
     # Get function from `clustering_func` string
+
+    data_normalized = data_normalized.mean(dim='scenarios', keep_attrs=True)
+
     func = utils.plugin_load(clustering_func, builtin_module='time_clustering')
 
     result = func(data_normalized, **kwargs)

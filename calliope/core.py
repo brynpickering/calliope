@@ -38,6 +38,7 @@ from . import sets
 from . import time_funcs  # pylint: disable=unused-import
 from . import time_masks  # pylint: disable=unused-import
 from . import utils
+from . import sampling
 
 # Enable simple format when printing ModelWarnings
 formatwarning_orig = warnings.formatwarning
@@ -185,7 +186,13 @@ class Model(object):
         self._sets = {**self._sets, **sets_loc_tech}
 
         self.mode = self.config_run.mode
+        self.initialize_scenarios()
+        if 'k' in self.data.dims:
+            self.data = self.data.transpose('y', 'x', 'k', 't', 'scenarios')
+        else:
+            self.data = self.data.transpose('y', 'x', 't', 'scenarios')
         self.initialize_time()
+
 
     def override_model_config(self, override_dict):
         od = override_dict
@@ -350,6 +357,73 @@ class Model(object):
                 else:
                     msg = 'Time settings incompatible with operational mode'
                     raise exceptions.ModelError(msg)
+
+        return None
+
+    def initialize_scenarios(self):
+        """
+        For robust optimisation, scenarios are used to realise the uncertainty
+        to which parameters are exposed.
+        Using data available in the run configuration 'robust_optimisation' key,
+        self.data timeseries parameters are extended to include the scenario dimension
+        """
+        if 'robust_optimisation' not in self.config_run.keys():
+            self._sets['scenarios'] = [1]
+            for var in self.data.var():
+                if 't' in self.data[var].coords and len(self.data[var].dims) > 1:
+                    self.data[var] = self.data[var].expand_dims('scenarios')
+            self.data['probability'] = xr.DataArray([1], dims=['scenarios'],
+                                                    coords=[('scenarios', [1])])
+            return None
+
+        scenarios = self.config_run.robust_optimisation.get('scenarios') #int value
+        probability = self.config_run.robust_optimisation.get('probability', 'equal')
+        uncertain_parameters = self.config_run.robust_optimisation.get('uncertain_parameters') # dict of parameter: distribution pairs
+
+        if not scenarios or not uncertain_parameters:
+            raise exceptions.ModelError(
+                'Insufficient information to create scenarios. Need to set at '
+                'least `scenarios` and `uncertain_parameters`')
+        else:
+            self._sets['scenarios'] = list(i+1 for i in range(scenarios))
+            scenario_dataarray = xr.DataArray([1 for i in self._sets['scenarios']],
+                dims=['scenarios'], coords=[('scenarios', self._sets['scenarios'])])
+            for var in self.data.var():
+                if 't' in self.data[var].coords and len(self.data[var].dims) > 1:
+                    self.data[var] = xr.broadcast(self.data[var],
+                                                  scenario_dataarray)[0]
+            if probability == 'equal':
+                self.data['probability'] = xr.DataArray(
+                    [1/scenarios for i in range(scenarios)],
+                    dims=['scenarios'],
+                    coords=[('scenarios', self._sets['scenarios'])])
+            elif isinstance(probability, dict):
+                self.data['probability'] = xr.DataArray(
+                    [probability[i+1] for i in range(scenarios)],
+                    dims=['scenarios'],
+                    coords=[('scenarios', self._sets['scenarios'])])
+            else:
+                raise exceptions.ModelError(
+                    'Probability not assigned for scenarios, or format is not '
+                    '"equal" or a dict with a value for each scenario')
+        for parameter in uncertain_parameters.keys():
+            if parameter not in self.data.variables:
+                raise exceptions.ModelError(
+                    'Uncertainty can only be accounted for in timeseries '
+                    'parameters, you will need to create a time varying csv '
+                    'file of the mean values for `{}` to have it accounted for '
+                    'in robust optimisation.'.format(parameter))
+            else:
+                temp_data = self.data[parameter].copy(deep=True)
+                techs = uncertain_parameters[parameter].get('techs', self.data.y)
+                for tech in techs:
+                    temp_data.loc[dict(y=tech)] = \
+                        sampling.create_scenarios(self,
+                            temp_data.loc[dict(y=tech)],
+                            method=uncertain_parameters[parameter][tech].method,
+                            scenarios=scenarios).values
+                self.data.update(temp_data.to_dataset())
+
 
         return None
 
@@ -1105,7 +1179,7 @@ class Model(object):
     def _get_t_max_demand(self):
         """Return timestep index with maximum demand"""
         # FIXME needs unit tests
-        t_max_demands = utils.AttrDict()
+        t_max_demands = pd.DataFrame()
         for c in self._sets['c']:
             ys = [y for y in self.data['y'].values
                   if self.get_carrier(y, 'in') == c]
@@ -1113,9 +1187,8 @@ class Model(object):
             r_carrier = self.data['r'].loc[{'y': ys}].copy()
             # Only kep negative (=demand) values
             r_carrier.values[r_carrier.values > 0] = 0
-            t_max_demands[c] = (r_carrier.sum(dim='y').sum(dim='x')
-                                         .to_dataframe()
-                                         .sum(axis=1).idxmin())
+            t_max_demands[c] = (r_carrier.sum(dim=['y', 'x']).to_pandas()
+                                                               .T.idxmin())
         return t_max_demands
 
     def add_constraint(self, constraint, *args, **kwargs):
@@ -1143,13 +1216,13 @@ class Model(object):
         getter_data = (src_data[src_param].to_dataframe().reorder_levels(levels)
                                                          .to_dict()[src_param])
 
-        def getter_constraint(m, y, x, t):  # pylint: disable=unused-argument
-            return getter_data[(y, x, t)]
+        def getter_constraint(m, y, x, t, s):  # pylint: disable=unused-argument
+            return getter_data[(y, x, t, s)]
 
-        def getter_cost(m, y, x, t, k):  # pylint: disable=unused-argument
-            return getter_data[(y, x, t, k)]
+        def getter_cost(m, y, x, t, k, s):  # pylint: disable=unused-argument
+            return getter_data[(y, x, t, k, s)]
 
-        if len(src_data[src_param].dims) == 4:  # Costs
+        if len(src_data[src_param].dims) == 5:  # Costs
             return getter_cost
         else:  # All other constraints
             return getter_constraint
@@ -1159,10 +1232,10 @@ class Model(object):
         Returns a `getter` function that returns (x, t)-specific
         values for parameters, used in parameter updating
         """
-        if len(src_data[src_param].dims) == 4:  # Costs
-            levels = ['y', 'x', 't', 'k']
+        if len(src_data[src_param].dims) == 5:  # Costs
+            levels = ['y', 'x', 't', 'k', 'scenarios']
         else: # all other constraints
-            levels = ['y', 'x', 't']
+            levels = ['y', 'x', 't', 'scenarios']
         getter_data = (src_data[src_param].to_dataframe()
                                           .reorder_levels(levels)
                                           .to_dict()[src_param])
@@ -1188,7 +1261,7 @@ class Model(object):
                 param_object[i] = initializer(self.m, i)
 
         s_init = self.data['s_init'].to_dataframe().to_dict()['s_init']
-        s_init_initializer = lambda m, y, x: float(s_init[x, y])
+        s_init_initializer = lambda m, y, x: float(s_init[y, x])
         for loc_tech in self.m.loc_tech:
             x, y = loc_tech.split(":", 1)
             self.m.s_init[y, x] = s_init_initializer(self.m, y, x)
@@ -1248,6 +1321,8 @@ class Model(object):
         m.k = po.Set(initialize=self._sets['k'], ordered=True)
         # Technologies
         m.y = po.Set(initialize=self._sets['y'], ordered=True)
+        # Scenarios
+        m.scenarios = po.Set(initialize=self._sets['scenarios'], ordered=True)
 
         #
         # loc_tech subsets
@@ -1291,25 +1366,31 @@ class Model(object):
 
         for param in self.config_model.timeseries_constraints:
             y_set = list(getattr(m, 'y_' + param + '_timeseries'))
-            if len(d[param].dims) == 4:  # Costs
-                initializer = self._param_populator(d, param, ['y', 'x', 't', 'k'])
+            if len(d[param].dims) == 5:  # Costs
+                initializer = self._param_populator(d, param, ['y', 'x', 't',
+                                                               'k', 'scenarios'])
                 setattr(
                     m, param + '_param',
-                    po.Param(y_set, m.x, m.t, m.k,
+                    po.Param(y_set, m.x, m.t, m.k, m.scenarios,
                              initialize=initializer, mutable=True)
                 )
             else:  # All other constraints
-                initializer = self._param_populator(d, param, ['y', 'x', 't'])
+                initializer = self._param_populator(d, param, ['y', 'x', 't',
+                                                               'scenarios'])
                 setattr(
                     m, param + '_param',
-                    po.Param(y_set, m.x, m.t,
+                    po.Param(y_set, m.x, m.t, m.scenarios,
                              initialize=initializer, mutable=True)
                 )
 
         s_init = self.data['s_init'].to_dataframe().to_dict()['s_init']
-        s_init_initializer = lambda m, y, x: float(s_init[x, y])
+        s_init_initializer = lambda m, y, x: float(s_init[y, x])
         m.s_init = po.Param(m.y, m.x, initialize=s_init_initializer,
                             mutable=True)
+        probability = self.data['probability'].to_dataframe().to_dict()['probability']
+        probability_initializer = lambda m, s: float(probability[s])
+        m.probability = po.Param(m.scenarios, initialize=probability_initializer,
+                                 mutable=True)
 
         #
         # Variables and constraints
@@ -1327,6 +1408,8 @@ class Model(object):
                   constraints.base.node_constraints_transmission,
                   constraints.base.node_costs,
                   constraints.base.model_constraints]
+        if 'robust_optimisation' in self.config_run.keys():
+            constr += [constraints.base.CVaR_constraints]
         if self.mode == 'plan':
             constr += [constraints.planning.system_margin,
                        constraints.planning.node_constraints_build_total]
@@ -1504,11 +1587,19 @@ class Model(object):
         self.solution = (self.solution.merge(xr.DataArray(md)
                                                .to_dataset(name='metadata')))
         # Add summary
-        summary = self.get_summary()
-        summary.columns.name = 'cols_summary'
-        summary.index.name = 'techs'
-        self.solution = (self.solution.merge(xr.DataArray(summary)
-                                               .to_dataset(name='summary')))
+        summary = []
+        for s in self.solution.scenarios:
+            scenario_summary = self.get_summary(self.solution.loc[dict(scenarios=s)])
+            summary.append(scenario_summary.values)
+        cols = scenario_summary.columns
+        index = scenario_summary.index
+        self.solution = (
+            self.solution.merge(
+                xr.DataArray(summary, dims=['scenarios', 'techs', 'cols_summary'],
+                                      coords=[('scenarios', self.solution.scenarios),
+                                              ('techs', index),
+                                              ('cols_summary', cols)])
+                    .to_dataset(name='summary')))
         # Add groups
         groups = self.get_groups()
         groups.columns.name = 'cols_groups'
@@ -1528,7 +1619,8 @@ class Model(object):
                                         .to_dataset(name='time_res')))
         # reorganise variable coordinates
         self.solution = self.solution.transpose('y', 'techs', 'x', 'c', 'k',
-            't','cols_groups', 'cols_metadata', 'cols_shares', 'cols_summary')
+            't', 'scenarios', 'cols_groups', 'cols_metadata', 'cols_shares',
+            'cols_summary')
         # Add model and run configuration
         self.solution.attrs['config_run'] = self.config_run
         self.solution.attrs['config_model'] = self.config_model
@@ -1703,23 +1795,8 @@ class Model(object):
         """
         sol = self.solution
         cost_dict = {}
-        for cost in self._sets['k']:
-            carrier_dict = {}
-            for carrier in self._sets['c']:
-                # Levelized cost of electricity (LCOE)
-                with np.errstate(divide='ignore', invalid='ignore'):  # don't warn about division by zero
-                    lc = (sol['costs'].loc[dict(k=cost)] /
-                          sol['c_prod'].loc[dict(c=carrier)])
-                lc = lc.to_pandas()
-
-                # Make sure the dataframe has y as columns and x as index
-                if lc.index.name == 'y':
-                    lc = lc.T
-
-                lc = lc.replace(np.inf, 0)
-                carrier_dict[carrier] = lc
-            cost_dict[cost] = xr.Dataset(carrier_dict).to_array(dim='c')
-        arr = xr.Dataset(cost_dict).to_array(dim='k')
+        with np.errstate(divide='ignore', invalid='ignore'):
+            arr = sol['costs'] / sol['c_prod']
         return arr
 
     def _get_time_res_sum(self):
@@ -1741,21 +1818,9 @@ class Model(object):
 
         """
         sol = self.solution
-        cfs = {}
-        for carrier in sol.coords['c'].values:
-            time_res_sum = self._get_time_res_sum()
-            with np.errstate(divide='ignore', invalid='ignore'):
-                cf = sol['c_prod'].loc[dict(c=carrier)] / (sol['e_cap_net']
-                                                           * time_res_sum)
-            cf = cf.to_pandas()
-
-            # Make sure the dataframe has y as columns and x as index
-            if cf.index.name == 'y':
-                cf = cf.T
-
-            cf = cf.fillna(0)
-            cfs[carrier] = cf
-        arr = xr.Dataset(cfs).to_array(dim='c')
+        time_res_sum = self._get_time_res_sum()
+        with np.errstate(divide='ignore', invalid='ignore'):
+            arr = sol['c_prod'] / (sol['e_cap_net'] * time_res_sum)
         return arr
 
     def get_metadata(self):
@@ -1770,9 +1835,7 @@ class Model(object):
         df.loc[:, 'color'] = df.index.map(lambda y: self.get_color(y))
         return df
 
-    def get_summary(self, sort_by='e_cap', carrier=None):
-        sol = self.solution
-
+    def get_summary(self, sol, sort_by='e_cap', carrier=None):
         c_prod = sol['c_prod'].sum(dim='x')
         c_con = sol['c_con'].sum(dim='x')
         df = pd.DataFrame(index=sol.y, columns=['e_con', 'e_prod'])
@@ -1831,7 +1894,7 @@ class Model(object):
         for optional in optionals:
             try:
                 df[optional] = sol[optional].sum(dim='x')
-            except:
+            except KeyError:
                 continue
 
         # # Add technology type

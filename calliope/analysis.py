@@ -23,7 +23,7 @@ import pandas as pd
 from . import analysis_utils as au
 
 
-def plot_carrier_production(solution, carrier='power', subset=dict(),
+def plot_carrier_production(solution, scenario=1, carrier='power', subset=dict(),
                             **kwargs):
     """
     Generate a stackplot of the production by the given ``carrier``.
@@ -40,7 +40,7 @@ def plot_carrier_production(solution, carrier='power', subset=dict(),
         Passed to ``plot_timeseries``.
 
     """
-    data = solution['e'].loc[dict(c=carrier, **subset)].sum(dim='x')
+    data = solution['e'].loc[dict(c=carrier, scenarios=scenario, **subset)].sum(dim='x')
     return plot_timeseries(solution, data, carrier=carrier, demand='demand_{}'.format(carrier), **kwargs)
 
 
@@ -211,7 +211,7 @@ def plot_installed_capacities(
 
 
 def plot_transmission(solution, tech='ac_transmission', carrier='power',
-                      labels='utilization',
+                      labels='utilization', scenario=1,
                       figsize=(15, 15), fontsize=9,
                       show_scale=True,
                       ax=None,
@@ -233,6 +233,8 @@ def plot_transmission(solution, tech='ac_transmission', carrier='power',
     labels : str, default 'utilization'
         Determines how transmission links are labeled, either
         `transmission` or `utilization`.
+    scenario : int, deafualt 1
+        which scenario to plot data for (each may be different)
     figsize : (int, int), default (15, 15)
         Size of resulting figure.
     fontsize : int, default 9
@@ -259,8 +261,9 @@ def plot_transmission(solution, tech='ac_transmission', carrier='power',
     def get_annual_power_transmission(zone):
         try:
             return (
-                solution['e'].loc[dict(c=carrier, y=trans_tech(zone))]
-                             .sum(dim='t').to_pandas()
+                solution['e']
+                    .loc[dict(c=carrier, y=trans_tech(zone), scenarios=scenario)]
+                    .sum(dim='t').to_pandas()
             )
         except KeyError:
             return 0
@@ -308,7 +311,7 @@ def plot_transmission(solution, tech='ac_transmission', carrier='power',
     return ax
 
 
-def get_delivered_cost(solution, cost_class='monetary', carrier='power',
+def get_delivered_cost(solution, cost_class='monetary', carrier='power', scenario=1,
                        count_unmet_demand=False):
     """
     Get the levelized cost per unit of energy delivered for the given
@@ -319,12 +322,13 @@ def get_delivered_cost(solution, cost_class='monetary', carrier='power',
     solution : solution container
     cost_class : str, default 'monetary'
     carrier : str, default 'power'
+    scenario : int, default 1
     count_unmet_demand : bool, default False
         Whether to count the cost of unmet demand in the final
         delivered cost.
 
     """
-    summary = solution.summary.to_pandas()
+    summary = solution.summary.loc[dict(scenarios=scenario)].to_pandas()
     meta = solution.metadata.to_pandas()
     carrier_subset = meta[meta.carrier_out == carrier].index.tolist()
     if count_unmet_demand is False:
@@ -332,8 +336,8 @@ def get_delivered_cost(solution, cost_class='monetary', carrier='power',
             carrier_subset.remove('unmet_demand_' + carrier)
         except ValueError:  # no unmet demand technology
             pass
-    cost = (solution['costs'].loc[dict(k=cost_class, y=carrier_subset)]
-                             .to_pandas().sum().sum())
+    cost = (solution['costs'].loc[dict(k=cost_class, y=carrier_subset,
+                                    scenarios=scenario)].to_pandas().sum().sum())
     # Actually, met_demand also includes demand "met" by unmet_demand
     met_demand = summary.at['demand_' + carrier, 'e_con']
     try:
@@ -421,8 +425,8 @@ def get_group_share(solution, techs, group, var='e_prod'):
             return list(set([i.split(':')[0] for i in group]))
         techs = transmission_basenames(techs)
         members = transmission_basenames(members)
-    supply_total = summary.loc[members, var].sum()
-    supply_group = summary.loc[techs, var].sum()
+    supply_total = summary.loc[dict(techs=members, cols_summary=var)].sum()
+    supply_group = summary.loc[dict(techs=techs, cols_summary=var)].sum()
     try:
         with np.errstate(divide='ignore', invalid='ignore'):
             return supply_group / supply_total
@@ -433,7 +437,7 @@ def get_group_share(solution, techs, group, var='e_prod'):
         return np.nan
 
 
-def get_unmet_demand_hours(solution, carrier='power', details=False):
+def get_unmet_demand_hours(solution, carrier='power', scenario=1, details=False):
     """
     Get information about unmet demand from ``solution``.
 
@@ -441,6 +445,7 @@ def get_unmet_demand_hours(solution, carrier='power', details=False):
     ----------
     solution : solution container
     carrier : str, default 'power'
+    scenario : int, default 1
     details : bool, default False
         By default, only the number of hours with unmet are returned. If
         details is True, a dict with 'hours', 'timesteps', and 'dates' keys
@@ -448,7 +453,7 @@ def get_unmet_demand_hours(solution, carrier='power', details=False):
 
     """
     unmet = (solution['e']
-             .loc[dict(c=carrier, y='unmet_demand_' + carrier)]
+             .loc[dict(c=carrier, scenarios=scenario, y='unmet_demand_' + carrier)]
              .sum(dim='x')
              .to_pandas())
     timesteps = len(unmet[unmet > 0])

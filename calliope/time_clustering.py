@@ -154,6 +154,8 @@ def get_closest_days_from_clusters(data, mean_data, clusters):
     days = int(len(data['t']) / ts_per_day)
     n_x = len(data['x'])
     n_y = len(subset_y)
+    n_k = len(data.get('k', [])) # defaults to 0 if monetary dimension not in data
+    scenarios = len(data['scenarios'])
 
     chosen_days = {}
 
@@ -164,7 +166,14 @@ def get_closest_days_from_clusters(data, mean_data, clusters):
         target = mean_data['r'].loc[dict(t=subset_t, y=subset_y)].values
 
         lookup_array = data['r'].loc[dict(y=subset_y)].values
-        lookup_array = lookup_array.reshape((n_y, days, ts_per_day, n_x)).transpose(1, 0, 2, 3)
+        if data.get('k'):
+            lookup_array = (lookup_array.reshape(
+                (n_y, n_x, days, ts_per_day, n_k, scenarios))
+                .transpose(3, 0, 1, 2, 4, 5))
+        else:
+            lookup_array = (lookup_array.reshape(
+                (n_y, n_x, days, ts_per_day, scenarios))
+                .transpose(2, 0, 1, 3, 4))
 
         chosen_days[cluster] = find_nearest_vector_index(lookup_array, target)
 
@@ -282,6 +291,48 @@ def get_clusters_kmeans(data, tech=None, timesteps=None, k=5):
 
     return clusters, centroids
 
+def get_clusters_degree_day(data, method='heating', ref_T=15.5,
+                            clusters=[0, 5, 10], T_filepath='/temperatures.csv'):
+    """
+    Get clusters from weather data, picking days based on the heating/cooling degree day
+    Parameters
+    ----------
+    data : xarray.Dataset
+        Should be normalized
+    method : string; default = 'heating'
+        Either 'heating' (Tdd - T if T < Tdd else 0)
+        or 'cooling' (T - Tdd if T > Tdd else 0)
+    ref_T : float; default = 15.5
+        Reference temperature, in degC, corresponding to Tdd in heating degree
+        day calculations
+    clusters : list; default = [0, 5, 10]
+        Each list element refers to lower bound of degree day clusters.
+    T_filepath : string; Default = '/temperatures.csv'
+        filepath to 'temperatures.csv', usually held in the model data folder
+
+    Returns
+    -------
+    clusters : dataframe
+        Indexed by timesteps and with locations as columns, giving cluster
+        membership for first timestep of each day.
+
+    """
+    big_M = [1e3] # to catch any values above the last cluster lower bound
+    timesteps_per_day = _get_timesteps_per_day(data)
+    temperatures = pd.read_csv(T_filepath, header=None, index_col=0)
+    temperatures.index = data.t
+    if method == 'heating':
+        degree_hour = (ref_T - temperatures) / timesteps_per_day
+    elif method == 'cooling':
+        degree_hour = (temperatures - ref_T) / timesteps_per_day
+    degree_hour[degree_hour < 0] = 0
+    degree_day = degree_hour.resample('1D').sum()
+    labels = [i for i in range(len(clusters))]
+
+    clusters = pd.cut(degree_day, bins=clusters+big_M, include_lowest=True,
+                      labels=labels)
+
+    return clusters, temperatures
 
 def get_clusters_hierarchical(data, tech=None, max_d=None, k=None):
     """

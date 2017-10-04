@@ -69,7 +69,8 @@ class TestModel:
     def test_plot_timeseries(self, model):
         # Just make sure this doesn't raise any exceptions
         analysis.plot_timeseries(model.solution,
-                                 model.solution['e'].loc[dict(c='power')].sum(dim='x'),
+                                 model.solution['e'].loc[dict(c='power',
+                                    scenarios=1)].sum(dim='x'),
                                  carrier='power', demand='demand_power')
 
     def test_plot_installed_capacities(self, model):
@@ -86,7 +87,7 @@ class TestModel:
 
     def test_get_levelized_cost(self, model):
         lcoe = analysis.get_levelized_cost(model.solution)
-        assert_almost_equal(lcoe.at['ccgt'], 0.1)
+        assert_almost_equal(lcoe.at['ccgt', 1], 0.1)
 
     def test_get_group_share(self, model,):
         # TODO this should be tested with a more complex model

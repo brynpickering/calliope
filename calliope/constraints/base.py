@@ -29,7 +29,7 @@ def _formatwarning(message, category, filename, lineno, line=None):
 
 warnings.formatwarning = _formatwarning
 
-def get_constraint_param(model, param_string, y, x, t):
+def get_constraint_param(model, param_string, y, x, t, s):
     """
     Function to get values for constraints which can optionally be
     loaded from file (so may have time dependency).
@@ -42,12 +42,12 @@ def get_constraint_param(model, param_string, y, x, t):
     """
 
     if param_string in model.data and y in model._sets['y_' + param_string + '_timeseries']:
-        return getattr(model.m, param_string + '_param')[y, x, t]
+        return getattr(model.m, param_string + '_param')[y, x, t, s]
     else:
         return model.get_option(y + '.constraints.' + param_string, x=x)
 
 
-def get_cost_param(model, param_string, k, y, x, t):
+def get_cost_param(model, param_string, k, y, x, t, s):
     """
     Function to get values for constraints which can optionally be
     loaded from file (so may have time dependency).
@@ -67,7 +67,7 @@ def get_cost_param(model, param_string, k, y, x, t):
         return cost_getter(cost, y, k, x=x)
 
     if param_string in model.data and y in model._sets['y_' + param_string + '_timeseries']:
-        return getattr(model.m, param_string + '_param')[y, x, t, k]
+        return getattr(model.m, param_string + '_param')[y, x, t, k, s]
     else:  # Search in model.config_model
         return _cost(param_string, y, k, x=x)
 
@@ -109,23 +109,27 @@ def generate_variables(model):
     m.r2_cap = po.Var(m.loc_tech_r2, within=po.NonNegativeReals)
 
     # Unit commitment
-    m.r = po.Var(m.loc_tech_supply_plus_finite_r, m.t, within=po.Reals)
-    m.r2 = po.Var(m.loc_tech_r2, m.t, within=po.NonNegativeReals)
-    m.s = po.Var(m.loc_tech_store, m.t, within=po.NonNegativeReals)
-    m.c_prod = po.Var(m.c, m.loc_tech, m.t, within=po.NonNegativeReals)
-    m.c_con = po.Var(m.c, m.loc_tech, m.t, within=po.NegativeReals)
-    m.export = po.Var(m.loc_tech_export, m.t, within=po.NonNegativeReals)
+    m.r = po.Var(m.loc_tech_supply_plus_finite_r, m.t, m.scenarios, within=po.Reals)
+    m.r2 = po.Var(m.loc_tech_r2, m.t, m.scenarios, within=po.NonNegativeReals)
+    m.s = po.Var(m.loc_tech_store, m.t, m.scenarios, within=po.NonNegativeReals)
+    m.c_prod = po.Var(m.c, m.loc_tech, m.t, m.scenarios, within=po.NonNegativeReals)
+    m.c_con = po.Var(m.c, m.loc_tech, m.t, m.scenarios, within=po.NegativeReals)
+    m.export = po.Var(m.loc_tech_export, m.t, m.scenarios, within=po.NonNegativeReals)
 
     # Costs
-    m.cost_var = po.Var(m.loc_tech, m.t, m.k, within=po.Reals)
+    m.cost_var = po.Var(m.loc_tech, m.t, m.k, m.scenarios, within=po.Reals)
     m.cost_fixed = po.Var(m.loc_tech, m.k, within=po.Reals)
-    m.cost = po.Var(m.loc_tech, m.k, within=po.Reals)
+    m.cost = po.Var(m.loc_tech, m.k, m.scenarios, within=po.Reals)
 
     # Binary/Integer variables
     m.purchased = po.Var(m.loc_tech_purchase, within=po.Binary)
     m.units = po.Var(m.loc_tech_milp, within=po.NonNegativeIntegers)
-    m.operating_units = po.Var(m.loc_tech_milp, m.t, within=po.NonNegativeIntegers)
+    m.operating_units = po.Var(m.loc_tech_milp, m.t, m.scenarios, within=po.NonNegativeIntegers)
 
+    if 'robust_optimisation' in model.config_run.keys():
+        # CVaR variables
+        m.xi = po.Var(within=po.Reals) # Auxiliary variable used to calculate the CVaR
+        m.eta = po.Var(m.scenarios, within=po.NonNegativeReals) # Auxiliary variable used to calculate the CVaR
 
 def node_resource(model):
     m = model.m
@@ -135,35 +139,36 @@ def node_resource(model):
     # re-evaluated on model re-construction -- we now check for
     # demand/supply tech instead, which means that `r` can only
     # be ALL negative or ALL positive for a given tech!
-    # Ideally we have `elif po.value(m.r[y, x, t]) > 0:` instead of
+    # Ideally we have `elif po.value(m.r[y, x, t, s]) > 0:` instead of
     # `elif y in m.y_supply or y in m.y_unmet:` and `elif y in m.y_demand:`
 
-    def r_available_rule(m, loc_tech, t):
+    def r_available_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         r_scale = model.get_option(y + '.constraints.r_scale', x=x)
-        force_r = get_constraint_param(model, 'force_r', y, x, t)
-        resource = get_constraint_param(model, 'r', y, x, t)
+        force_r = get_constraint_param(model, 'force_r', y, x, t, s)
+        resource = get_constraint_param(model, 'r', y, x, t, s)
         if resource == np.inf and force_r is True:
             w = exceptions.ModelWarning
             message = ('`force_r: True` and `r: inf` are incompatible for {}:{}'
-                ' at {}. r_available constraint has been ignored. To avoid this'
+                ' at {} in scenario {}. r_available constraint has been ignored. To avoid this'
                 ' message in future, set timeseries `r` at technology definition,'
-                ' even if you use location override.'.format(y, x, t))
+                ' even if you use location override.'.format(y, x, t, s))
             warnings.warn(message, w)
             return po.Constraint.Skip
 
-        if loc_tech in m.loc_tech_supply or loc_tech in m.loc_tech_demand:
-            e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        if (loc_tech in m.loc_tech_supply or loc_tech in m.loc_tech_demand
+            or loc_tech in m.loc_tech_unmet):
+            e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
             if po.value(e_eff) == 0:
                 c_prod = 0
             else:
-                c_prod = sum(m.c_prod[c, loc_tech, t] for c in m.c) / e_eff # supply techs
-            c_con = sum(m.c_con[c, loc_tech, t] for c in m.c) * e_eff # demand techs
+                c_prod = sum(m.c_prod[c, loc_tech, t, s] for c in m.c) / e_eff # supply techs
+            c_con = sum(m.c_con[c, loc_tech, t, s] for c in m.c) * e_eff # demand techs
 
             if loc_tech in m.loc_tech_area:
                 r_avail = resource * r_scale * m.r_area[loc_tech]
             else:
-                r_avail = get_constraint_param(model, 'r', y, x, t) * r_scale
+                r_avail = get_constraint_param(model, 'r', y, x, t, s) * r_scale
 
             if force_r:
                 return c_prod + c_con == r_avail
@@ -171,7 +176,7 @@ def node_resource(model):
                 return c_prod - c_con <= r_avail
 
         elif loc_tech in m.loc_tech_supply_plus:
-            r_eff = get_constraint_param(model, 'r_eff', y, x, t)
+            r_eff = get_constraint_param(model, 'r_eff', y, x, t, s)
 
             if loc_tech in m.loc_tech_area:
                 r_avail = resource * r_scale * m.r_area[loc_tech] * r_eff
@@ -179,18 +184,18 @@ def node_resource(model):
                 r_avail = resource * r_scale * r_eff
 
             if force_r:
-                return m.r[loc_tech, t] == r_avail
+                return m.r[loc_tech, t, s] == r_avail
             else:
-                return m.r[loc_tech, t] <= r_avail
+                return m.r[loc_tech, t, s] <= r_avail
 
     # Constraints
-    m.c_r_available = po.Constraint(m.loc_tech_finite_r, m.t,
+    m.c_r_available = po.Constraint(m.loc_tech_finite_r, m.t, m.scenarios,
                                     rule=r_available_rule)
 
 def unit_commitment(model):
     m = model.m
 
-    def c_unit_commitment_rule(m, loc_tech, t):
+    def c_unit_commitment_rule(m, loc_tech, t, s):
         # operating_units
         # ^^^^^^^^^^^^^^^
         #
@@ -204,9 +209,9 @@ def unit_commitment(model):
         #   $operating\_units(y, x, t) \leq units(y, x)
         ##
 
-        return m.operating_units[loc_tech, t] <= m.units[loc_tech]
+        return m.operating_units[loc_tech, t, s] <= m.units[loc_tech]
 
-    m.c_unit_commitment = po.Constraint(m.loc_tech_milp, m.t,
+    m.c_unit_commitment = po.Constraint(m.loc_tech_milp, m.t, m.scenarios,
                                         rule=c_unit_commitment_rule)
 
 def node_energy_balance(model):
@@ -217,97 +222,97 @@ def node_energy_balance(model):
     def _e_eff_per_distance(y, x):
         return e_eff_per_distance_getter(y, x)
 
-    def get_conversion_out(c_1, c_2, m, loc_tech, t):
+    def get_conversion_out(c_1, c_2, m, loc_tech, t, s):
         if isinstance(c_1, dict):
-            c_prod1 = sum([m.c_prod[c, loc_tech, t] / c_1[c] for c in c_1.keys()])
+            c_prod1 = sum([m.c_prod[c, loc_tech, t, s] / c_1[c] for c in c_1.keys()])
         else:
-            c_prod1 = m.c_prod[c_1, loc_tech, t]
+            c_prod1 = m.c_prod[c_1, loc_tech, t, s]
         if isinstance(c_2, dict):
             c_min = min(c_2.values())
-            c_prod2 = sum([m.c_prod[c, loc_tech, t] / (c_2[c] / c_min) for c in c_2.keys()])
+            c_prod2 = sum([m.c_prod[c, loc_tech, t, s] / (c_2[c] / c_min) for c in c_2.keys()])
         else:
             c_min = 1
-            c_prod2 = m.c_prod[c_2, loc_tech, t]
+            c_prod2 = m.c_prod[c_2, loc_tech, t, s]
         return c_prod1 * c_min == c_prod2
 
-    def get_conversion_in(c_1, c_2, m, loc_tech, t):
+    def get_conversion_in(c_1, c_2, m, loc_tech, t, s):
         if isinstance(c_1, dict):
-            c_con1 = sum([m.c_con[c, loc_tech, t] / c_1[c] for c in c_1.keys()])
+            c_con1 = sum([m.c_con[c, loc_tech, t, s] / c_1[c] for c in c_1.keys()])
         else:
-            c_con1 = m.c_con[c_1, loc_tech, t]
+            c_con1 = m.c_con[c_1, loc_tech, t, s]
         if isinstance(c_2, dict):
             c_min = min(c_2.values())
-            c_con2 = sum([m.c_con[c, loc_tech, t] / (c_2[c] / c_min) for c in c_2.keys()])
+            c_con2 = sum([m.c_con[c, loc_tech, t, s] / (c_2[c] / c_min) for c in c_2.keys()])
         else:
             c_min = 1
-            c_con2 = m.c_con[c_2, loc_tech, t]
+            c_con2 = m.c_con[c_2, loc_tech, t, s]
         return c_con1 * c_min == c_con2
 
     # Constraint rules
-    def transmission_rule(m, loc_tech, t):
+    def transmission_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         y_remote, x_remote = transmission.get_remotes(y, x)
         loc_tech_remote = ":".join([x_remote, y_remote])
-        e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
         if loc_tech_remote in m.loc_tech_transmission:
             c = model.get_option(y + '.carrier')
-            return (m.c_prod[c, loc_tech, t]
-                    == -1 * m.c_con[c, loc_tech_remote, t]
+            return (m.c_prod[c, loc_tech, t, s]
+                    == -1 * m.c_con[c, loc_tech_remote, t, s]
                     * e_eff
                     * _e_eff_per_distance(y, x))
         else:
             return po.Constraint.NoConstraint
 
-    def conversion_rule(m, loc_tech, t):
+    def conversion_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         c_out = model.get_option(y + '.carrier_out')
         c_in = model.get_option(y + '.carrier_in')
-        e_eff = get_constraint_param(model, 'e_eff', y, x, t)
-        return (m.c_prod[c_out, loc_tech, t]
-                == -1 * m.c_con[c_in, loc_tech, t] * e_eff)
+        e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
+        return (m.c_prod[c_out, loc_tech, t, s]
+                == -1 * m.c_con[c_in, loc_tech, t, s] * e_eff)
 
-    def conversion_plus_primary_rule(m, loc_tech, t):
+    def conversion_plus_primary_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         c_out = model.get_option(y + '.carrier_out')
         c_in = model.get_option(y + '.carrier_in')
-        e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
         if isinstance(c_out, dict):
-            c_prod = sum(m.c_prod[c, loc_tech, t] / c_out[c] for c in c_out.keys())
+            c_prod = sum(m.c_prod[c, loc_tech, t, s] / c_out[c] for c in c_out.keys())
         else:
-            c_prod = m.c_prod[c_out, loc_tech, t]
+            c_prod = m.c_prod[c_out, loc_tech, t, s]
         if isinstance(c_in, dict):
-            c_con = sum([m.c_con[c, loc_tech, t] * c_in[c] for c in c_in.keys()])
+            c_con = sum([m.c_con[c, loc_tech, t, s] * c_in[c] for c in c_in.keys()])
         else:
-            c_con = m.c_con[c_in, loc_tech, t]
+            c_con = m.c_con[c_in, loc_tech, t, s]
         return c_prod == -1 * c_con * e_eff
 
-    def conversion_plus_secondary_out_rule(m, loc_tech, t):
+    def conversion_plus_secondary_out_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         c_1 = model.get_option(y + '.carrier_out')
         c_2 = model.get_option(y + '.carrier_out_2')
-        return get_conversion_out(c_1, c_2, m, loc_tech, t)
+        return get_conversion_out(c_1, c_2, m, loc_tech, t, s)
 
-    def conversion_plus_tertiary_out_rule(m, loc_tech, t):
+    def conversion_plus_tertiary_out_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         c_1 = model.get_option(y + '.carrier_out')
         c_3 = model.get_option(y + '.carrier_out_3')
-        return get_conversion_out(c_1, c_3, m, loc_tech, t)
+        return get_conversion_out(c_1, c_3, m, loc_tech, t, s)
 
-    def conversion_plus_secondary_in_rule(m, loc_tech, t):
+    def conversion_plus_secondary_in_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         c_1 = model.get_option(y + '.carrier_in')
         c_2 = model.get_option(y + '.carrier_in_2')
-        return get_conversion_in(c_1, c_2, m, loc_tech, t)
+        return get_conversion_in(c_1, c_2, m, loc_tech, t, s)
 
-    def conversion_plus_tertiary_in_rule(m, loc_tech, t):
+    def conversion_plus_tertiary_in_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         c_1 = model.get_option(y + '.carrier_in')
         c_3 = model.get_option(y + '.carrier_in_3')
-        return get_conversion_in(c_1, c_3, m, loc_tech, t)
+        return get_conversion_in(c_1, c_3, m, loc_tech, t, s)
 
-    def supply_plus_rule(m, loc_tech, t):
+    def supply_plus_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
-        e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
         p_eff = model.get_option(y + '.constraints.p_eff', x=x)
         total_eff = e_eff * p_eff
         # TODO once Pyomo supports it,
@@ -315,32 +320,32 @@ def node_energy_balance(model):
         if po.value(total_eff) == 0:
             c_prod = 0
         else:
-            c_prod = (sum(m.c_prod[c, loc_tech, t] for c in m.c)) / total_eff
+            c_prod = (sum(m.c_prod[c, loc_tech, t, s] for c in m.c)) / total_eff
 
         # If this tech is in the set of techs allowing r2, include it
         if loc_tech in m.loc_tech_r2:
-            r2 = m.r2[loc_tech, t]
+            r2 = m.r2[loc_tech, t, s]
         else:
             r2 = 0
 
         # A) Case where no storage allowed
         if loc_tech not in m.loc_tech_store:
-            return m.r[loc_tech, t] == c_prod - r2
+            return m.r[loc_tech, t, s] == c_prod - r2
 
         # B) Case where storage is allowed
-        r = m.r[loc_tech, t]
+        r = m.r[loc_tech, t, s]
         if m.t.order_dict[t] == 0:
             s_minus_one = m.s_init[y, x]
         else:
-            s_loss = get_constraint_param(model, 's_loss', y, x, t)
+            s_loss = get_constraint_param(model, 's_loss', y, x, t, s)
             s_minus_one = (((1 - s_loss)
                             ** time_res.at[model.prev_t(t)])
-                           * m.s[loc_tech, model.prev_t(t)])
-        return (m.s[loc_tech, t] == s_minus_one + r + r2 - c_prod)
+                           * m.s[loc_tech, model.prev_t(t), s])
+        return (m.s[loc_tech, t, s] == s_minus_one + r + r2 - c_prod)
 
-    def storage_rule(m, loc_tech, t):
+    def storage_rule(m, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
-        e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
         p_eff = model.get_option(y + '.constraints.p_eff', x=x)
         total_eff = e_eff * p_eff
 
@@ -349,36 +354,36 @@ def node_energy_balance(model):
         if po.value(total_eff) == 0:
             c_prod = 0
         else:
-            c_prod = sum(m.c_prod[c, loc_tech, t] for c in m.c) / total_eff
-        c_con = sum(m.c_con[c, loc_tech, t] for c in m.c) * total_eff
+            c_prod = sum(m.c_prod[c, loc_tech, t, s] for c in m.c) / total_eff
+        c_con = sum(m.c_con[c, loc_tech, t, s] for c in m.c) * total_eff
 
         if m.t.order_dict[t] == 0:
             s_minus_one = m.s_init[y, x]
         else:
-            s_loss = get_constraint_param(model, 's_loss', y, x, t)
+            s_loss = get_constraint_param(model, 's_loss', y, x, t, s)
             s_minus_one = (((1 - s_loss)
                             ** time_res.at[model.prev_t(t)])
-                           * m.s[loc_tech, model.prev_t(t)])
-        return (m.s[loc_tech, t] == s_minus_one - c_prod - c_con)
+                           * m.s[loc_tech, model.prev_t(t), s])
+        return (m.s[loc_tech, t, s] == s_minus_one - c_prod - c_con)
 
     # Constraints
-    m.c_balance_transmission = po.Constraint(m.loc_tech_transmission, m.t,
+    m.c_balance_transmission = po.Constraint(m.loc_tech_transmission, m.t, m.scenarios,
                                             rule=transmission_rule)
-    m.c_balance_conversion = po.Constraint(m.loc_tech_conversion, m.t,
+    m.c_balance_conversion = po.Constraint(m.loc_tech_conversion, m.t, m.scenarios,
                                             rule=conversion_rule)
-    m.c_balance_conversion_plus = po.Constraint(m.loc_tech_conversion_plus, m.t,
+    m.c_balance_conversion_plus = po.Constraint(m.loc_tech_conversion_plus, m.t, m.scenarios,
                                             rule=conversion_plus_primary_rule)
-    m.c_balance_conversion_plus_secondary_out = po.Constraint(m.loc_tech_2out, m.t,
+    m.c_balance_conversion_plus_secondary_out = po.Constraint(m.loc_tech_2out, m.t, m.scenarios,
                                             rule=conversion_plus_secondary_out_rule)
-    m.c_balance_conversion_plus_tertiary_out = po.Constraint(m.loc_tech_3out, m.t,
+    m.c_balance_conversion_plus_tertiary_out = po.Constraint(m.loc_tech_3out, m.t, m.scenarios,
                                             rule=conversion_plus_tertiary_out_rule)
-    m.c_balance_conversion_plus_secondary_in = po.Constraint(m.loc_tech_2in, m.t,
+    m.c_balance_conversion_plus_secondary_in = po.Constraint(m.loc_tech_2in, m.t, m.scenarios,
                                             rule=conversion_plus_secondary_in_rule)
-    m.c_balance_conversion_plus_tertiary_in = po.Constraint(m.loc_tech_3in, m.t,
+    m.c_balance_conversion_plus_tertiary_in = po.Constraint(m.loc_tech_3in, m.t, m.scenarios,
                                             rule=conversion_plus_tertiary_in_rule)
-    m.c_balance_supply_plus = po.Constraint(m.loc_tech_supply_plus, m.t,
+    m.c_balance_supply_plus = po.Constraint(m.loc_tech_supply_plus, m.t, m.scenarios,
                                             rule=supply_plus_rule)
-    m.c_balance_storage = po.Constraint(m.loc_tech_storage, m.t,
+    m.c_balance_storage = po.Constraint(m.loc_tech_storage, m.t, m.scenarios,
                                             rule=storage_rule)
 
 
@@ -438,12 +443,14 @@ def node_constraints_build(model):
                 model.get_option(y + '.constraints.s_cap_per_unit', x=x))
         else:
             s_cap_max = model.get_option(y + '.constraints.s_cap.max', x=x)
-        if not s_cap_max:
+        if s_cap_max is False:
             s_cap_max = np.inf
         if not s_time_max:
             return s_cap_max
+        # No continuing past this point if s_time.max is not defined
         if not e_cap and not c_rate:
             return 0
+        # No continuing past this point if e_cap *and* c_rate are not defined
         elif not e_cap:
             e_cap = s_cap_max * c_rate
         elif e_cap and c_rate:
@@ -707,19 +714,19 @@ def node_constraints_operational(model):
     time_res = model.data['_time_res'].to_series()
 
     # Constraint rules
-    def r_max_upper_rule(m, loc_tech, t):
+    def r_max_upper_rule(m, loc_tech, t, s):
         """
         set maximum resource supply. Supply_plus techs only.
         """
-        return m.r[loc_tech, t] <= time_res.at[t] * m.r_cap[loc_tech]
+        return m.r[loc_tech, t, s] <= time_res.at[t] * m.r_cap[loc_tech]
 
-    def c_prod_max_rule(m, c, loc_tech, t):
+    def c_prod_max_rule(m, c, loc_tech, t, s):
         """
         Set maximum carrier production. All technologies.
         """
         y, x = get_y_x(loc_tech)
-        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t)
-        c_prod = m.c_prod[c, loc_tech, t]
+        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t, s)
+        c_prod = m.c_prod[c, loc_tech, t, s]
         if loc_tech in m.loc_tech_conversion_plus:  # Conversion techs with 2 or more output carriers
             carriers_out = model.get_carrier(y, 'out', all_carriers=True)
             if isinstance(carriers_out, str):
@@ -735,19 +742,19 @@ def node_constraints_operational(model):
         if c == model.get_option(y + '.carrier', default=y + '.carrier_out'):
             if loc_tech in m.loc_tech_milp:
                 e_cap = model.get_option(y + '.constraints.e_cap_per_unit', x=x)
-                return c_prod <= (time_res.at[t] * m.operating_units[loc_tech, t]
+                return c_prod <= (time_res.at[t] * m.operating_units[loc_tech, t, s]
                                   * e_cap * p_eff)
             return c_prod <= time_res.at[t] * m.e_cap[loc_tech] * p_eff
         else:
-            return m.c_prod[c, loc_tech, t] == 0
+            return m.c_prod[c, loc_tech, t, s] == 0
 
-    def c_prod_min_rule(m, c, loc_tech, t):
+    def c_prod_min_rule(m, c, loc_tech, t, s):
         """
         Set minimum carrier production. All technologies except conversion_plus
         """
         y, x = get_y_x(loc_tech)
-        min_use = get_constraint_param(model, 'e_cap_min_use', y, x, t)
-        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t)
+        min_use = get_constraint_param(model, 'e_cap_min_use', y, x, t, s)
+        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t, s)
         if not min_use or not allow_c_prod:
             return po.Constraint.NoConstraint
         if loc_tech in m.loc_tech_conversion_plus:  # Conversion techs with 2 output carriers
@@ -755,132 +762,132 @@ def node_constraints_operational(model):
         elif c == model.get_option(y + '.carrier', default=y + '.carrier_out'):
             if loc_tech in m.loc_tech_milp:
                 e_cap = model.get_option(y + '.constraints.e_cap_per_unit', x=x)
-                return (m.c_prod[c, loc_tech, t] >= time_res.at[t] *
-                    m.operating_units[loc_tech, t] * e_cap * min_use)
-            return (m.c_prod[c, loc_tech, t]
+                return (m.c_prod[c, loc_tech, t, s] >= time_res.at[t] *
+                    m.operating_units[loc_tech, t, s] * e_cap * min_use)
+            return (m.c_prod[c, loc_tech, t, s]
                     >= time_res.at[t] * m.e_cap[loc_tech] * min_use)
         else:
             return po.Constraint.Skip
 
-    def c_conversion_plus_prod_max_rule(m, loc_tech, t):
+    def c_conversion_plus_prod_max_rule(m, loc_tech, t, s):
         """
         Set maximum carrier production. Conversion_plus technologies.
         """
         y, x = get_y_x(loc_tech)
-        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t)
+        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t, s)
         c_out = model.get_option(y + '.carrier_out')
-        e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+        e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
         if isinstance(c_out, dict):
-            c_prod = sum(m.c_prod[c, loc_tech, t] for c in c_out.keys())
+            c_prod = sum(m.c_prod[c, loc_tech, t, s] for c in c_out.keys())
         else:
-            c_prod = m.c_prod[c_out, loc_tech, t]
+            c_prod = m.c_prod[c_out, loc_tech, t, s]
         if not allow_c_prod:
             return c_prod == 0
         else:
             if loc_tech in m.loc_tech_milp:
                 e_cap = model.get_option(y + '.constraints.e_cap_per_unit', x=x)
-                return c_prod <= (time_res.at[t] * m.operating_units[loc_tech, t]
+                return c_prod <= (time_res.at[t] * m.operating_units[loc_tech, t, s]
                                   * e_cap)
             return c_prod <= time_res.at[t] * m.e_cap[loc_tech]
 
-    def c_conversion_plus_prod_min_rule(m, loc_tech, t):
+    def c_conversion_plus_prod_min_rule(m, loc_tech, t, s):
         """
         Set minimum carrier production. Conversion_plus technologies.
         """
         y, x = get_y_x(loc_tech)
-        min_use = get_constraint_param(model, 'e_cap_min_use', y, x, t)
-        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t)
+        min_use = get_constraint_param(model, 'e_cap_min_use', y, x, t, s)
+        allow_c_prod = get_constraint_param(model, 'e_prod', y, x, t, s)
         c_out = model.get_option(y + '.carrier_out')
         if not min_use or not allow_c_prod:
             return po.Constraint.NoConstraint
         else:
             c_prod_min = time_res.at[t] * m.e_cap[loc_tech] * min_use
             if isinstance(c_out, dict):
-                c_prod = sum(m.c_prod[c, loc_tech, t] for c in c_out.keys())
+                c_prod = sum(m.c_prod[c, loc_tech, t, s] for c in c_out.keys())
             else:
-                c_prod = m.c_prod[c_out, loc_tech, t]
+                c_prod = m.c_prod[c_out, loc_tech, t, s]
             if loc_tech in m.loc_tech_milp:
                 e_cap = model.get_option(y + '.constraints.e_cap_per_unit', x=x)
-                return c_prod >= (time_res.at[t] * m.operating_units[loc_tech, t]
+                return c_prod >= (time_res.at[t] * m.operating_units[loc_tech, t, s]
                                   * e_cap * min_use)
             return c_prod >= c_prod_min
 
-    def c_con_max_rule(m, c, loc_tech, t):
+    def c_con_max_rule(m, c, loc_tech, t, s):
         """
         Set maximum carrier consumption. All technologies.
         """
         y, x = get_y_x(loc_tech)
-        allow_c_con = get_constraint_param(model, 'e_con', y, x, t)
+        allow_c_con = get_constraint_param(model, 'e_con', y, x, t, s)
         p_eff = model.get_option(y + '.constraints.p_eff', x=x)
         if loc_tech in m.loc_tech_conversion or loc_tech in m.loc_tech_conversion_plus:
             carriers = model.get_cp_carriers(y, x, direction='in')[1]
             if c not in carriers:
-                return m.c_con[c, loc_tech, t] == 0
+                return m.c_con[c, loc_tech, t, s] == 0
             else:
                 return po.Constraint.Skip
         if (allow_c_con is True and
                 c == model.get_option(y + '.carrier', default=y + '.carrier_in')):
             if loc_tech in m.loc_tech_milp:
                 e_cap = model.get_option(y + '.constraints.e_cap_per_unit', x=x)
-                return m.c_con[c, loc_tech, t] >= (time_res.at[t] * e_cap * p_eff
-                                               * m.operating_units[loc_tech, t] * -1)
-            return m.c_con[c, loc_tech, t] >= (-1 * time_res.at[t]
+                return m.c_con[c, loc_tech, t, s] >= (time_res.at[t] * e_cap * p_eff
+                                               * m.operating_units[loc_tech, t, s] * -1)
+            return m.c_con[c, loc_tech, t, s] >= (-1 * time_res.at[t]
                                             * m.e_cap[loc_tech] * p_eff)
         else:
-            return m.c_con[c, loc_tech, t] == 0
+            return m.c_con[c, loc_tech, t, s] == 0
 
-    def s_max_rule(m, loc_tech, t):
+    def s_max_rule(m, loc_tech, t, s):
         """
         Set maximum stored energy. Supply_plus & storage techs only.
         """
-        return m.s[loc_tech, t] <= m.s_cap[loc_tech]
+        return m.s[loc_tech, t, s] <= m.s_cap[loc_tech]
 
-    def r2_max_rule(m, loc_tech, t):
+    def r2_max_rule(m, loc_tech, t, s):
         """
         Set maximum secondary resource supply. Supply_plus techs only.
         """
         y, x = get_y_x(loc_tech)
-        r2_startup = get_constraint_param(model, 'r2_startup_only', y, x, t)
+        r2_startup = get_constraint_param(model, 'r2_startup_only', y, x, t, s)
         if (r2_startup and t >= model.data.startup_time_bounds):
-            return m.r2[loc_tech, t] == 0
+            return m.r2[loc_tech, t, s] == 0
         else:
-            return m.r2[loc_tech, t] <= time_res.at[t] * m.r2_cap[loc_tech]
+            return m.r2[loc_tech, t, s] <= time_res.at[t] * m.r2_cap[loc_tech]
 
-    def c_export_max_rule(m, loc_tech, t):
+    def c_export_max_rule(m, loc_tech, t, s):
         """
         Set maximum export. All exporting technologies.
         """
         y, x = get_y_x(loc_tech)
         if loc_tech in m.loc_tech_milp:
-            operating_units = m.operating_units[loc_tech, t]
+            operating_units = m.operating_units[loc_tech, t, s]
         else:
             operating_units = 1
-        if get_constraint_param(model, 'export_cap', y, x, t):
-            return (m.export[loc_tech, t] <=
-                    get_constraint_param(model, 'export_cap', y, x, t)
+        if get_constraint_param(model, 'export_cap', y, x, t, s):
+            return (m.export[loc_tech, t, s] <=
+                    get_constraint_param(model, 'export_cap', y, x, t, s)
                     * operating_units)
         else:
             return po.Constraint.Skip
 
     # Constraints
     m.c_r_max_upper = po.Constraint(
-        m.loc_tech_supply_plus_finite_r, m.t, rule=r_max_upper_rule)
+        m.loc_tech_supply_plus_finite_r, m.t, m.scenarios, rule=r_max_upper_rule)
     m.c_prod_max = po.Constraint(
-        m.c, m.loc_tech, m.t, rule=c_prod_max_rule)
+        m.c, m.loc_tech, m.t, m.scenarios, rule=c_prod_max_rule)
     m.c_prod_min = po.Constraint(
-        m.c, m.loc_tech, m.t, rule=c_prod_min_rule)
+        m.c, m.loc_tech, m.t, m.scenarios, rule=c_prod_min_rule)
     m.c_conversion_plus_prod_max = po.Constraint(
-        m.loc_tech_conversion_plus, m.t, rule=c_conversion_plus_prod_max_rule)
+        m.loc_tech_conversion_plus, m.t, m.scenarios, rule=c_conversion_plus_prod_max_rule)
     m.c_conversion_plus_prod_min = po.Constraint(
-        m.loc_tech_conversion_plus, m.t, rule=c_conversion_plus_prod_min_rule)
+        m.loc_tech_conversion_plus, m.t, m.scenarios, rule=c_conversion_plus_prod_min_rule)
     m.c_con_max = po.Constraint(
-        m.c, m.loc_tech, m.t, rule=c_con_max_rule)
+        m.c, m.loc_tech, m.t, m.scenarios, rule=c_con_max_rule)
     m.c_s_max = po.Constraint(
-        m.loc_tech_store, m.t, rule=s_max_rule)
+        m.loc_tech_store, m.t, m.scenarios, rule=s_max_rule)
     m.c_r2_max = po.Constraint(
-        m.loc_tech_r2, m.t, rule=r2_max_rule)
+        m.loc_tech_r2, m.t, m.scenarios, rule=r2_max_rule)
     m.c_export_max = po.Constraint(
-        m.loc_tech_export, m.t, rule=c_export_max_rule)
+        m.loc_tech_export, m.t, m.scenarios, rule=c_export_max_rule)
 
 
 def node_constraints_transmission(model):
@@ -1003,13 +1010,13 @@ def node_costs(model):
                     + (_cost('om_fixed', y, k, x) * m.e_cap[loc_tech] *
                        (sum(time_res * weights) / 8760)) + cost_con)
 
-    def cost_var_rule(m, loc_tech, t, k):
+    def cost_var_rule(m, loc_tech, t, k, s):
         y, x = get_y_x(loc_tech)
-        om_var = get_cost_param(model, 'om_var', k, y, x, t)
-        om_fuel = get_cost_param(model, 'om_fuel', k, y, x, t)
+        om_var = get_cost_param(model, 'om_var', k, y, x, t, s)
+        om_fuel = get_cost_param(model, 'om_fuel', k, y, x, t, s)
         if loc_tech in m.loc_tech_export:
-            export = m.export[loc_tech, t]
-            cost_export = get_cost_param(model, 'export', k, y, x, t) * export
+            export = m.export[loc_tech, t, s]
+            cost_export = get_cost_param(model, 'export', k, y, x, t, s) * export
         else:
             export = 0
             cost_export = 0
@@ -1025,44 +1032,44 @@ def node_costs(model):
         # It might be necessary to remove parasitic losses for this
         # i.e. c_prod --> es_prod.
         if om_var:
-            cost_op_var = om_var * weights.loc[t] * m.c_prod[carrier, loc_tech, t]
+            cost_op_var = om_var * weights.loc[t] * m.c_prod[carrier, loc_tech, t, s]
         else:
             cost_op_var = 0
 
         cost_op_fuel = 0
         if loc_tech in m.loc_tech_supply_plus and om_fuel:
-            r_eff = get_constraint_param(model, 'r_eff', y, x, t)
+            r_eff = get_constraint_param(model, 'r_eff', y, x, t, s)
             if po.value(r_eff) > 0:  # In case r_eff is zero, to avoid an infinite value
                 # Dividing by r_eff here so we get the actual r used, not the r
                 # moved into storage...
-                cost_op_fuel = (om_fuel * weights.loc[t] * (m.r[loc_tech, t] / r_eff))
+                cost_op_fuel = (om_fuel * weights.loc[t] * (m.r[loc_tech, t, s] / r_eff))
         elif loc_tech in m.loc_tech_supply and om_fuel:  # m.r == m.c_prod/e_eff
-            e_eff = get_constraint_param(model, 'e_eff', y, x, t)
+            e_eff = get_constraint_param(model, 'e_eff', y, x, t, s)
             if po.value(e_eff) > 0:  # in case e_eff is zero, to avoid an infinite value
                 cost_op_fuel = (om_fuel * weights.loc[t] *
-                                (m.c_prod[carrier, loc_tech, t] / e_eff))
+                                (m.c_prod[carrier, loc_tech, t, s] / e_eff))
 
         cost_op_r2 = 0
         if loc_tech in m.loc_tech_r2:
-            r2_eff = get_constraint_param(model, 'r2_eff', y, x, t)
+            r2_eff = get_constraint_param(model, 'r2_eff', y, x, t, s)
             if po.value(r2_eff) > 0:  # in case r2_eff is zero, to avoid an infinite value
-                om_r2 = get_cost_param(model, 'om_r2', k, y, x, t)
-                cost_op_r2 = (om_r2 * weights.loc[t] * (m.r2[loc_tech, t] / r2_eff))
+                om_r2 = get_cost_param(model, 'om_r2', k, y, x, t, s)
+                cost_op_r2 = (om_r2 * weights.loc[t] * (m.r2[loc_tech, t, s] / r2_eff))
 
-        return (m.cost_var[loc_tech, t, k] ==
+        return (m.cost_var[loc_tech, t, k, s] ==
                 cost_op_var + cost_op_fuel + cost_op_r2 + cost_export)
 
-    def cost_rule(m, loc_tech, k):
+    def cost_rule(m, loc_tech, k, s):
         return (
-            m.cost[loc_tech, k] ==
+            m.cost[loc_tech, k, s] ==
             m.cost_fixed[loc_tech, k] +
-            sum(m.cost_var[loc_tech, t, k] for t in m.t)
+            sum(m.cost_var[loc_tech, t, k, s] for t in m.t)
         )
 
     # Constraints
     m.c_cost_fixed = po.Constraint(m.loc_tech, m.k, rule=cost_fixed_rule)
-    m.c_cost_var = po.Constraint(m.loc_tech, m.t, m.k, rule=cost_var_rule)
-    m.c_cost = po.Constraint(m.loc_tech, m.k, rule=cost_rule)
+    m.c_cost_var = po.Constraint(m.loc_tech, m.t, m.k, m.scenarios, rule=cost_var_rule)
+    m.c_cost = po.Constraint(m.loc_tech, m.k, m.scenarios, rule=cost_rule)
 
 
 def model_constraints(model):
@@ -1086,7 +1093,7 @@ def model_constraints(model):
         return children
 
     # Constraint rules
-    def c_system_balance_rule(m, c, x, t):
+    def c_system_balance_rule(m, c, x, t, s):
         # Balacing takes place at top-most (level 0) locations, as well
         # as within any lower-level locations that contain children
         if (model._locations.at[x, '_level'] == 0
@@ -1096,28 +1103,40 @@ def model_constraints(model):
             _loc_techs_export = list(set(loc_techs).intersection(m.loc_tech_export))
             loc_techs_export = [i for i in _loc_techs_export if
                 model.get_option(get_y_x(i)[0] + '.export', x=get_y_x(i)[1]) == c]
-            balance = (sum(m.c_prod[c, loc_tech, t] for loc_tech in loc_techs)
-                       + sum(m.c_con[c, loc_tech, t] for loc_tech in loc_techs)
-                       - sum(m.export[loc_tech, t] for loc_tech in loc_techs_export))
+            balance = (sum(m.c_prod[c, loc_tech, t, s] for loc_tech in loc_techs)
+                       + sum(m.c_con[c, loc_tech, t, s] for loc_tech in loc_techs)
+                       - sum(m.export[loc_tech, t, s] for loc_tech in loc_techs_export))
 
             return balance == 0
         else:
             return po.Constraint.NoConstraint
 
     # Constraints
-    m.c_system_balance = po.Constraint(m.c, m.x, m.t,
+    m.c_system_balance = po.Constraint(m.c, m.x, m.t, m.scenarios,
                                        rule=c_system_balance_rule)
 
-    def c_export_balance_rule(m, c, loc_tech, t):
+    def c_export_balance_rule(m, c, loc_tech, t, s):
         y, x = get_y_x(loc_tech)
         # Ensuring no technology can 'pass' its export capability to another
         # technology with the same carrier_out,
         # by limiting its export to the capacity of its production
         if c == model.get_option(y + '.export', x=x):
-            return m.c_prod[c, loc_tech, t] >= m.export[loc_tech, t]
+            return m.c_prod[c, loc_tech, t, s] >= m.export[loc_tech, t, s]
         else:
             return po.Constraint.Skip
 
     # Constraints
-    m.c_export_balance = po.Constraint(m.c, m.loc_tech_export, m.t,
+    m.c_export_balance = po.Constraint(m.c, m.loc_tech_export, m.t, m.scenarios,
                                        rule=c_export_balance_rule)
+
+def CVaR_constraints(model):
+    m = model.m
+
+    def CVaR_rule(m, s):
+        """This constraint fits the auxiliary variables into the model"""
+        cost_sum = sum(model.get_option(get_y_x(loc_tech)[0] + '.weight') *
+                       m.cost[loc_tech, 'monetary', s] for loc_tech in m.loc_tech)
+        return (cost_sum - m.xi <= m.eta[s])
+
+    # Constraints
+    m.c_CVaR = po.Constraint(m.scenarios, rule=CVaR_rule)

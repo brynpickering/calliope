@@ -53,11 +53,11 @@ class TestModel:
             subset_t: ['2005-01-01', '2005-01-0{}']
         """
         model1 = create_and_run_model(override.format(2))
-        cost1 = model1.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost1 = model1.solution['costs'].loc[dict(k='monetary', scenarios=1, x='1', y='ccgt')]
+        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         model2 = create_and_run_model(override.format(4))
-        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', scenarios=1, y='ccgt')]
+        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         # LCOE should be the same, as the output is constant throughout
         assert_almost_equal(lcoe1, lcoe2, tolerance=0.0000001)
         # Cost should be double in the second case as it's twice the time
@@ -75,11 +75,11 @@ class TestModel:
             subset_t: ['2005-01-01', '2005-01-0{}']
         """
         model1 = create_and_run_model(override.format(2))
-        cost1 = model1.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost1 = model1.solution['costs'].loc[dict(k='monetary', scenarios=1, x='1', y='ccgt')]
+        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         model2 = create_and_run_model(override.format(4))
-        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost2 = model2.solution['costs'].loc[dict(k='monetary', scenarios=1, x='1', y='ccgt')]
+        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         # LCOE should be the same, as the output is constant throughout
         assert_almost_equal(lcoe1, lcoe2, tolerance=0.0000001)
         # Cost should be double in the second case as it's twice the time
@@ -98,11 +98,11 @@ class TestModel:
         """
         demand = 'demand-blocky_r.csv'
         model1 = create_and_run_model(override.format(2), demand_file=demand)
-        cost1 = model1.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost1 = model1.solution['costs'].loc[dict(k='monetary', x='1', scenarios=1, y='ccgt')]
+        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         model2 = create_and_run_model(override.format(4), demand_file=demand)
-        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', scenarios=1, y='ccgt')]
+        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         # LCOE should be different
         # TODO should check for exact values
         assert lcoe1 > lcoe2  # lcoe1 has lower output, so is higher
@@ -122,11 +122,11 @@ class TestModel:
         """
         demand = 'demand-blocky_r.csv'
         model1 = create_and_run_model(override.format(2), demand_file=demand)
-        cost1 = model1.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost1 = model1.solution['costs'].loc[dict(k='monetary', x='1', scenarios=1, y='ccgt')]
+        lcoe1 = model1.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         model2 = create_and_run_model(override.format(4), demand_file=demand)
-        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', y='ccgt')]
-        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', cols_summary='levelized_cost_monetary')]
+        cost2 = model2.solution['costs'].loc[dict(k='monetary', x='1', scenarios=1, y='ccgt')]
+        lcoe2 = model2.solution['summary'].loc[dict(techs='ccgt', scenarios=1, cols_summary='levelized_cost_monetary')]
         # LCOE should be the same since only fuel costs matter
         assert_almost_equal(lcoe1, lcoe2, tolerance=0.0000001)
         # Cost in second case are more than 2 * first case,

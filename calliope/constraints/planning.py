@@ -56,18 +56,18 @@ def system_margin(model):
     def get_y_x(loc_tech):
         return loc_tech.split(":", 1)
     # Constraint rules
-    def c_system_margin_rule(m, c):
+    def c_system_margin_rule(m, c, s):
         # If no margin defined for a carrier, use 0 (i.e. no margin)
         margin = model.config_model.system_margin.get_key(c, default=0)
         if margin:
-            t = model.t_max_demand[c]
-            return (sum(m.c_prod[c, loc_tech, t] for loc_tech in m.loc_tech if
-                        loc_tech not in m.loc_tech_demand) * (1 + margin)
+            t = model.t_max_demand.loc[s, c]
+            return (sum(m.c_prod[c, loc_tech, t, s] for loc_tech in m.loc_tech
+                        if loc_tech not in m.loc_tech_demand) * (1 + margin)
                     <= time_res.at[t] *
                     sum(
                         (m.e_cap[loc_tech] /
                          base.get_constraint_param(model, 'e_eff',
-                            get_y_x(loc_tech)[1], get_y_x(loc_tech)[0], t))
+                            get_y_x(loc_tech)[1], get_y_x(loc_tech)[0], t, s))
                          for loc_tech in m.loc_tech if loc_tech not in
                          m.loc_tech_demand and carrier(loc_tech) == c)
                     )
@@ -75,4 +75,4 @@ def system_margin(model):
             return po.Constraint.NoConstraint
 
     # Constraints
-    m.c_system_margin = po.Constraint(m.c, rule=c_system_margin_rule)
+    m.c_system_margin = po.Constraint(m.c, m.scenarios, rule=c_system_margin_rule)
