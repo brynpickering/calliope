@@ -211,8 +211,21 @@ def unit_commitment(model):
 
         return m.operating_units[loc_tech, t, s] <= m.units[loc_tech]
 
+    def c_purchase_rule(m, loc_tech):
+        y, x = get_y_x(loc_tech)
+        e_cap_max = model.get_option(y + '.constraints.e_cap.max', x=x)
+        e_cap_equals = model.get_option(y + '.constraints.e_cap.equals', x=x)
+
+        if e_cap_max or e_cap_equals:
+            return m.purchased[loc_tech] == 1
+        else:
+            return m.purchased[loc_tech] == 0
+
     m.c_unit_commitment = po.Constraint(m.loc_tech_milp, m.t, m.scenarios,
                                         rule=c_unit_commitment_rule)
+    if model.mode == 'operate':
+        m.c_purchase = po.Constraint(m.loc_tech_purchase, rule=c_purchase_rule)
+
 
 def node_energy_balance(model):
     m = model.m

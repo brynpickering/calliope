@@ -380,10 +380,10 @@ class Model(object):
         probability = self.config_run.robust_optimisation.get('probability', 'equal')
         uncertain_parameters = self.config_run.robust_optimisation.get('uncertain_parameters') # dict of parameter: distribution pairs
 
-        if not scenarios or not uncertain_parameters:
+        if not scenarios:
             raise exceptions.ModelError(
                 'Insufficient information to create scenarios. Need to set at '
-                'least `scenarios` and `uncertain_parameters`')
+                'least `scenarios`')
         else:
             self._sets['scenarios'] = list(i+1 for i in range(scenarios))
             scenario_dataarray = xr.DataArray([1 for i in self._sets['scenarios']],
@@ -392,7 +392,7 @@ class Model(object):
                 if 't' in self.data[var].coords and len(self.data[var].dims) > 1:
                     self.data[var] = xr.broadcast(self.data[var],
                                                   scenario_dataarray)[0]
-            if probability == 'equal':
+            if not probability or probability == 'equal':
                 self.data['probability'] = xr.DataArray(
                     [1/scenarios for i in range(scenarios)],
                     dims=['scenarios'],
@@ -402,27 +402,24 @@ class Model(object):
                     [probability[i+1] for i in range(scenarios)],
                     dims=['scenarios'],
                     coords=[('scenarios', self._sets['scenarios'])])
-            else:
-                raise exceptions.ModelError(
-                    'Probability not assigned for scenarios, or format is not '
-                    '"equal" or a dict with a value for each scenario')
-        for parameter in uncertain_parameters.keys():
-            if parameter not in self.data.variables:
-                raise exceptions.ModelError(
-                    'Uncertainty can only be accounted for in timeseries '
-                    'parameters, you will need to create a time varying csv '
-                    'file of the mean values for `{}` to have it accounted for '
-                    'in robust optimisation.'.format(parameter))
-            else:
-                temp_data = self.data[parameter].copy(deep=True)
-                techs = uncertain_parameters[parameter].get('techs', self.data.y)
-                for tech in techs:
-                    temp_data.loc[dict(y=tech)] = \
-                        sampling.create_scenarios(self,
-                            temp_data.loc[dict(y=tech)],
-                            method=uncertain_parameters[parameter][tech].method,
-                            scenarios=scenarios).values
-                self.data.update(temp_data.to_dataset())
+        if uncertain_parameters:
+            for parameter in uncertain_parameters.keys():
+                if parameter not in self.data.variables:
+                    raise exceptions.ModelError(
+                        'Uncertainty can only be accounted for in timeseries '
+                        'parameters, you will need to create a time varying csv '
+                        'file of the mean values for `{}` to have it accounted for '
+                        'in robust optimisation.'.format(parameter))
+                else:
+                    temp_data = self.data[parameter].copy(deep=True)
+                    techs = uncertain_parameters[parameter].get('techs', self.data.y)
+                    for tech in techs:
+                        temp_data.loc[dict(y=tech)] = \
+                            sampling.create_scenarios(self,
+                                temp_data.loc[dict(y=tech)],
+                                method=uncertain_parameters[parameter][tech].method,
+                                scenarios=scenarios).values
+                    self.data.update(temp_data.to_dataset())
 
 
         return None
